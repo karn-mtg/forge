@@ -1,0 +1,25 @@
+{
+  "name": "karnforge",
+  "version": "1.0.0",
+  "description": "MTG Library Manager",
+  "main": "main.js",
+  "scripts": {
+    "start": "npm run build:css && electron .",
+    "dev": "concurrently \"npm run watch:css\" \"electron .\"",
+    "build:css": "tailwindcss -i ./src/styles/input.css -o ./src/styles/output.css --minify",
+    "watch:css": "tailwindcss -i ./src/styles/input.css -o ./src/styles/output.css --watch",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 --module-dir ."
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.2",
+    "electron": "^33.3.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "stream-json": "^1.9.1"
+  }
+}

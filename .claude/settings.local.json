@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(jobs -l)",
+      "Bash(node -e \"require\\('playwright-core'\\)\")",
+      "Bash(npm install *)",
+      "Bash(npx electron-vite *)",
+      "Bash(node scripts/driver.mjs)",
+      "Bash(node scripts/driver2.mjs)",
+      "Bash(npm uninstall *)",
+      "Bash(npx tsc *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\mtgbuilder\\\\src\\\\renderer\\\\src\" -Recurse -Force | Select-Object FullName, @{Name='Type';Expression={if\\($_.PSIsContainer\\){'Dir'}else{'File'}}} | Sort-Object FullName)",
+      "Bash(node_modules\\\\.bin\\\\tsc --noEmit)",
+      "PowerShell(New-Item *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\teferislibrary\" -Exclude \".venv\" -Recurse -Filter \"*.py\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(where electron-rebuild *)",
+      "Bash(Remove-Item -Recurse -Force \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\node_modules\\\\better-sqlite3\" -ErrorAction SilentlyContinue)",
+      "PowerShell(node -e \"const sj = require\\('stream-json'\\); console.log\\(Object.keys\\(sj\\)\\)\" 2>&1)",
+      "PowerShell(node -e \"const p = require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.dependencies, null, 2\\)\\)\" 2>&1)",
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./db/scryfall'\\); require\\('./db/seed'\\); require\\('./ipc/library'\\); require\\('./ipc/scryfall'\\); console.log\\('All modules loaded OK'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"require\\('./db/cards'\\); require\\('./ipc/cards'\\); require\\('./db/library'\\); require\\('./ipc/library'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e \"require\\('./db/cards'\\); require\\('./ipc/cards'\\); require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/seed'\\); require\\('./db/sync'\\); console.log\\('All modules OK'\\)\")",
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/cards'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./preload.js'\\)\")",
+      "Bash(node -e \"const lib = require\\('./db/library'\\); console.log\\(Object.keys\\(lib\\).filter\\(k=>k.includes\\('rrangement'\\)\\)\\)\")",
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/sync'\\); console.log\\('All modules OK'\\)\")"
+    ]
+  }
+}

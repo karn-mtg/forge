@@ -1,0 +1,69 @@
+'use strict';
+
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const path = require('path');
+const { initLibrary } = require('./db/library');
+const { seedLibrary } = require('./db/seed');
+const { initCards } = require('./db/cards');
+const { registerLibraryHandlers } = require('./ipc/library');
+const { registerCardsHandlers } = require('./ipc/cards');
+const { getSettings, setSettings } = require('./settings');
+
+let mainWindow = null;
+let libraryDb = null;
+let cardsDb = null;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 960,
+    minHeight: 640,
+    frame: false,
+    backgroundColor: '#0D0D0D',
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, 'src', 'dashboard.html'));
+
+  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+app.whenReady().then(() => {
+  const userDataPath = app.getPath('userData');
+
+  libraryDb = initLibrary(userDataPath);
+  seedLibrary(libraryDb);
+
+  cardsDb = initCards(userDataPath);
+
+  ipcMain.on('window-minimize', () => mainWindow?.minimize());
+  ipcMain.on('window-maximize', () => {
+    if (!mainWindow) return;
+    mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+  });
+  ipcMain.on('window-close', () => mainWindow?.close());
+
+  registerLibraryHandlers(ipcMain, () => libraryDb);
+  registerCardsHandlers(ipcMain, () => cardsDb, () => mainWindow);
+
+  ipcMain.handle('settings:get', () => getSettings(userDataPath));
+  ipcMain.handle('settings:set', (_, updates) => setSettings(userDataPath, updates));
+  ipcMain.handle('shell:openUserData', () => shell.openPath(userDataPath));
+
+  createWindow();
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});

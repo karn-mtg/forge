@@ -1,0 +1,2 @@
+- Before create screens, always look in reusable components
+- Always focus in keep code simple and consise 

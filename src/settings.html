@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KarnForge — Settings</title>
+  <link rel="stylesheet" href="./styles/output.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+</head>
+<body class="bg-background text-on-background font-body-md selection:bg-primary/30 antialiased">
+
+<!-- Sidebar -->
+<aside class="fixed h-screen w-[280px] left-0 top-0 glass-sidebar border-r border-white/5 z-50 flex flex-col">
+
+  <!-- Traffic lights -->
+  <div class="h-12 flex items-center px-6 gap-2 titlebar-drag">
+    <button class="traffic-light traffic-light-close no-drag"
+            onclick="window.electronAPI.closeWindow()"
+            title="Close"></button>
+    <button class="traffic-light traffic-light-minimize no-drag"
+            onclick="window.electronAPI.minimizeWindow()"
+            title="Minimize"></button>
+    <button class="traffic-light traffic-light-maximize no-drag"
+            onclick="window.electronAPI.maximizeWindow()"
+            title="Maximize"></button>
+  </div>
+
+  <div class="px-4 py-4 flex-1 overflow-y-auto">
+    <!-- App logo -->
+    <div class="flex items-center gap-3 mb-8 px-2">
+      <div class="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+        <span class="material-symbols-outlined text-on-primary-fixed text-xl" style="font-variation-settings: 'FILL' 1;">playing_cards</span>
+      </div>
+      <h1 class="font-headline-md text-lg font-bold text-primary tracking-tight">KarnForge</h1>
+    </div>
+
+    <nav class="space-y-0.5">
+      <a href="./dashboard.html" class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]">dashboard</span>
+        <span>Dashboard</span>
+      </a>
+
+      <div class="pt-4 pb-1 px-3">
+        <p class="font-label-sm text-[10px] uppercase tracking-widest text-outline/40 font-bold">Library</p>
+      </div>
+
+      <div id="folder-tree" class="space-y-0.5"></div>
+
+      <div class="pt-6 pb-1 px-3">
+        <p class="font-label-sm text-[10px] uppercase tracking-widest text-outline/40 font-bold">Preferences</p>
+      </div>
+      <a href="./favorites.html" class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]">star</span>
+        <span>Favorites</span>
+      </a>
+      <a href="./recents.html" class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]">schedule</span>
+        <span>Recents</span>
+      </a>
+      <a href="./collection.html" class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]">inventory_2</span>
+        <span>Collection</span>
+      </a>
+      <a href="./wishlist.html" class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]">bookmark</span>
+        <span>Wishlist</span>
+      </a>
+      <!-- Settings active state rendered inline here since it is in the Preferences group -->
+      <a href="./settings.html" class="flex items-center tree-item-active px-3 py-1.5 rounded-md transition-all text-body-md">
+        <span class="material-symbols-outlined mr-2 text-[18px]" style="font-variation-settings: 'FILL' 1;">settings</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+  </div>
+</aside>
+
+<!-- Top header -->
+<header class="sticky top-0 w-full z-40 bg-background/80 backdrop-blur-md border-b border-white/5">
+  <div class="flex justify-between items-center h-16 px-margin-desktop ml-[280px] titlebar-drag">
+    <h2 class="font-headline-md text-lg font-bold text-on-surface no-drag">Settings</h2>
+    <div class="flex items-center gap-2 no-drag">
+      <a href="./settings.html" class="w-9 h-9 rounded-lg flex items-center justify-center text-primary bg-white/5 transition-all">
+        <span class="material-symbols-outlined text-[22px]" style="font-variation-settings:'FILL' 1;">settings</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- Main content -->
+<main class="ml-[280px] p-margin-desktop min-h-screen">
+  <div class="max-w-[800px] mx-auto space-y-8">
+
+    <!-- Section 1: Defaults -->
+    <div class="bg-surface border border-white/5 rounded-2xl p-6 shadow-xl">
+      <h3 class="font-headline-md text-base font-bold text-on-surface mb-5">Defaults</h3>
+
+      <div>
+        <label for="default-format" class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">
+          Default Format
+        </label>
+        <div class="flex items-center gap-3">
+          <select id="default-format"
+            class="bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all appearance-none min-w-[200px]">
+            <option value="commander">Commander</option>
+            <option value="modern">Modern</option>
+            <option value="standard">Standard</option>
+            <option value="pioneer">Pioneer</option>
+            <option value="legacy">Legacy</option>
+            <option value="pauper">Pauper</option>
+          </select>
+          <span id="format-saved"
+            class="opacity-0 flex items-center gap-1 text-label-sm text-green-400 transition-opacity duration-300">
+            <span class="material-symbols-outlined text-[14px]" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+            Saved
+          </span>
+        </div>
+        <p class="mt-2 text-[12px] text-on-surface-variant/40">Used when creating new decks without a specified format.</p>
+      </div>
+    </div>
+
+    <!-- Section 2: Data -->
+    <div class="bg-surface border border-white/5 rounded-2xl p-6 shadow-xl">
+      <h3 class="font-headline-md text-base font-bold text-on-surface mb-5">Data</h3>
+
+      <div class="space-y-6">
+
+        <!-- User Data Folder -->
+        <div>
+          <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">
+            User Data Folder
+          </label>
+          <p class="text-body-md text-on-surface-variant/70 mb-3">
+            Card database, decks, and settings are stored here.
+          </p>
+          <button onclick="window.settingsAPI.openUserData()"
+            class="flex items-center gap-2 px-4 py-2.5 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md">
+            <span class="material-symbols-outlined text-[18px]">folder_open</span>
+            Open Folder
+          </button>
+        </div>
+
+        <div class="border-t border-white/5"></div>
+
+        <!-- Sync Status -->
+        <div>
+          <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">
+            Sync Status
+          </label>
+          <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-[18px] text-on-surface-variant/50">sync</span>
+            <p id="sync-status" class="text-body-md text-on-surface-variant/70">
+              Checking…
+            </p>
+            <a href="./dashboard.html"
+              title="Go to Dashboard to sync"
+              class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:text-primary hover:bg-primary/10 transition-all ml-auto flex-shrink-0">
+              <span class="material-symbols-outlined text-[16px]">open_in_new</span>
+            </a>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Section 3: About -->
+    <div class="bg-surface border border-white/5 rounded-2xl p-6 shadow-xl">
+      <h3 class="font-headline-md text-base font-bold text-on-surface mb-5">About</h3>
+
+      <div class="space-y-4">
+
+        <!-- App identity -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-on-primary-fixed text-2xl" style="font-variation-settings: 'FILL' 1;">playing_cards</span>
+          </div>
+          <div>
+            <p class="font-bold text-on-surface text-base leading-snug">KarnForge</p>
+            <p class="text-label-sm text-on-surface-variant/50">Version 1.0.0</p>
+          </div>
+        </div>
+
+        <p class="text-body-md text-on-surface-variant/60">
+          MTG deck builder &mdash; offline, fast, yours.
+        </p>
+
+        <!-- Links -->
+        <div class="flex items-center gap-4 pt-1">
+          <span class="text-label-md text-primary/70 hover:text-primary cursor-pointer transition-colors underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60">
+            View on GitHub
+          </span>
+          <span class="text-on-surface-variant/20 text-sm select-none">&bull;</span>
+          <span class="text-label-md text-primary/70 hover:text-primary cursor-pointer transition-colors underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60">
+            Report Issue
+          </span>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+  // ── Folder tree ──────────────────────────────────────────────────────────────
+
+  function renderFolderTree(tree) {
+    const container = document.getElementById('folder-tree');
+    container.innerHTML = '';
+
+    function buildFolderNode(folder) {
+      const details = document.createElement('details');
+      details.open = true;
+
+      const summary = document.createElement('summary');
+      summary.className = 'flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer text-on-surface-variant/80 transition-colors';
+      summary.innerHTML = `
+        <span class="material-symbols-outlined disclosure-arrow mr-1 text-[16px]">chevron_right</span>
+        <span class="material-symbols-outlined mr-2 text-[16px]">${folder.icon || 'folder'}</span>
+        <span class="text-body-md">${folder.name}</span>`;
+      details.appendChild(summary);
+
+      if (folder.decks && folder.decks.length > 0) {
+        const deckList = document.createElement('div');
+        deckList.className = 'ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5';
+        for (const deck of folder.decks) {
+          const a = document.createElement('a');
+          a.href = `./deckview.html?id=${deck.id}`;
+          a.className = 'flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md';
+          a.innerHTML = `
+            <span class="material-symbols-outlined mr-2 text-[16px]">layers</span>
+            <span class="truncate">${deck.name}</span>`;
+          deckList.appendChild(a);
+        }
+        details.appendChild(deckList);
+      }
+
+      if (folder.children && folder.children.length > 0) {
+        const inner = document.createElement('div');
+        inner.className = 'ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5';
+        folder.children.forEach(child => inner.appendChild(buildFolderNode(child)));
+        details.appendChild(inner);
+      }
+
+      return details;
+    }
+
+    const collectionsDetails = document.createElement('details');
+    collectionsDetails.open = true;
+    collectionsDetails.innerHTML = `
+      <summary class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer text-on-surface-variant transition-colors">
+        <span class="material-symbols-outlined disclosure-arrow mr-1 text-[18px]">chevron_right</span>
+        <span class="material-symbols-outlined mr-2 text-[18px]">folder</span>
+        <span class="text-body-md">My Collections</span>
+      </summary>`;
+
+    const inner = document.createElement('div');
+    inner.className = 'ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5';
+    tree.forEach(f => inner.appendChild(buildFolderNode(f)));
+    collectionsDetails.appendChild(inner);
+    container.appendChild(collectionsDetails);
+  }
+
+  // ── Settings events ──────────────────────────────────────────────────────────
+
+  document.getElementById('default-format').addEventListener('change', async (e) => {
+    await window.settingsAPI.set({ defaultFormat: e.target.value });
+    const saved = document.getElementById('format-saved');
+    saved.classList.remove('opacity-0');
+    setTimeout(() => saved.classList.add('opacity-0'), 1500);
+  });
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+
+  async function init() {
+    // Load sidebar folder tree
+    try {
+      const tree = await window.libraryAPI.getFolderTree();
+      renderFolderTree(tree);
+    } catch {}
+
+    // Load settings
+    try {
+      const s = await window.settingsAPI.get();
+      document.getElementById('default-format').value = s.defaultFormat || 'commander';
+    } catch {}
+
+    // Load sync status
+    try {
+      const status = await window.cardsAPI.getStatus();
+      const el = document.getElementById('sync-status');
+      if (status && status.card_count) {
+        const date = status.source_updated_at
+          ? new Date(status.source_updated_at).toLocaleDateString()
+          : 'unknown';
+        el.textContent = `${status.card_count.toLocaleString()} cards · Last synced ${date}`;
+      } else {
+        el.textContent = 'Not synced yet';
+      }
+    } catch {
+      document.getElementById('sync-status').textContent = 'Not synced yet';
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>

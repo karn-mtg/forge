@@ -1,0 +1,2112 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KarnForge</title>
+  <link rel="stylesheet" href="./styles/output.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+  <style>
+    body { overflow: hidden; }
+  </style>
+</head>
+<body class="text-on-surface select-none antialiased bg-background">
+
+<!-- Sidebar -->
+<aside class="fixed h-screen w-[280px] left-0 top-0 glass-sidebar border-r border-white/5 z-50 flex flex-col">
+
+  <!-- Traffic lights (functional) -->
+  <div class="h-12 flex items-center px-6 gap-2 titlebar-drag">
+    <button class="traffic-light traffic-light-close no-drag"
+            onclick="window.electronAPI.closeWindow()"
+            title="Close"></button>
+    <button class="traffic-light traffic-light-minimize no-drag"
+            onclick="window.electronAPI.minimizeWindow()"
+            title="Minimize"></button>
+    <button class="traffic-light traffic-light-maximize no-drag"
+            onclick="window.electronAPI.maximizeWindow()"
+            title="Maximize"></button>
+  </div>
+
+  <div class="px-4 py-4 flex-1 overflow-y-auto">
+    <div class="flex items-center gap-3 mb-8 px-2">
+      <div class="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+        <span class="material-symbols-outlined text-on-primary-fixed text-xl" style="font-variation-settings: 'FILL' 1;">playing_cards</span>
+      </div>
+      <h1 class="font-headline-md text-lg font-bold text-primary tracking-tight">KarnForge</h1>
+    </div>
+
+    <nav class="space-y-0.5">
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./dashboard.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">dashboard</span>
+        <span>Dashboard</span>
+      </a>
+
+      <div class="pt-4 pb-1 px-3">
+        <p class="font-label-sm text-[10px] uppercase tracking-widest text-outline/40 font-bold">Decks</p>
+      </div>
+
+      <!-- Dynamic folder/deck tree -->
+      <div id="folder-tree" class="space-y-0.5"></div>
+
+      <div class="pt-6 pb-1 px-3">
+        <p class="font-label-sm text-[10px] uppercase tracking-widest text-outline/40 font-bold">Preferences</p>
+      </div>
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./favorites.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">star</span>
+        <span>Favorites</span>
+      </a>
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./recents.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">schedule</span>
+        <span>Recents</span>
+      </a>
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./collection.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">inventory_2</span>
+        <span>Collection</span>
+      </a>
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./wishlist.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">bookmark</span>
+        <span>Wishlist</span>
+      </a>
+      <a class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md text-on-surface-variant transition-all text-body-md" href="./settings.html">
+        <span class="material-symbols-outlined mr-2 text-[18px]">settings</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+  </div>
+
+  <div class="p-4 border-t border-white/5">
+    <button onclick="openNewDeckModal()" class="w-full bg-primary/10 text-primary border border-primary/20 py-2.5 rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-primary/20 transition-all active:scale-[0.98]">
+      <span class="material-symbols-outlined text-[20px]">add_circle</span>
+      <span class="text-label-md">New Deck</span>
+    </button>
+  </div>
+</aside>
+
+<!-- Main workshop layout -->
+<main class="ml-[280px] h-screen relative flex flex-col">
+
+  <!-- Shared top header (matches dashboard) -->
+  <header class="sticky top-0 w-full z-40 bg-background/80 backdrop-blur-md border-b border-white/5">
+    <div class="flex justify-between items-center h-16 px-margin-desktop titlebar-drag">
+      <div class="flex-1 max-w-xl no-drag">
+        <div class="relative group">
+          <span class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant/50 group-focus-within:text-primary transition-colors">search</span>
+          <input
+            class="w-full bg-surface-container/50 border border-white/5 rounded-lg py-2 pl-12 pr-4 text-body-md focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/10 transition-all placeholder:text-on-surface-variant/30"
+            placeholder="Search your library..."
+            type="text"
+          />
+        </div>
+      </div>
+      <div class="flex items-center gap-2 no-drag">
+        <a href="./settings.html" class="w-9 h-9 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-white/5 transition-all">
+          <span class="material-symbols-outlined text-[22px]">settings</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Deck subheader -->
+  <div class="flex items-center justify-between px-margin-desktop border-b border-white/5 bg-surface/40 backdrop-blur-md h-14 flex-shrink-0">
+    <!-- Left: deck identity + view toggle -->
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <span class="material-symbols-outlined text-primary text-[20px]">dark_mode</span>
+        <h2 id="deck-title" class="font-headline-md text-base font-bold text-on-surface">Loading…</h2>
+        <span id="deck-format-badge" class="px-2 py-0.5 rounded-md bg-primary/10 border border-primary/20 text-[9px] font-bold uppercase tracking-wider text-primary"></span>
+        <button id="deck-settings-btn" onclick="openDeckSettings()" class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:bg-white/8 hover:text-on-surface-variant transition-all no-drag">
+          <span class="material-symbols-outlined text-[16px]">settings</span>
+        </button>
+        <button id="deck-export-btn" onclick="exportDeck()" class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:bg-white/8 hover:text-on-surface-variant transition-all no-drag">
+          <span class="material-symbols-outlined text-[16px]">file_download</span>
+        </button>
+      </div>
+      <div class="bg-surface-container-highest rounded-lg p-0.5 flex items-center">
+        <button id="tab-workshop" class="px-3 py-1 rounded-md bg-surface-container-high text-primary font-bold text-label-md flex items-center gap-1.5 transition-all">
+          <span class="material-symbols-outlined text-[16px]">account_tree</span>
+          Workshop
+        </button>
+        <button id="tab-list" class="px-3 py-1 rounded-md text-on-surface-variant hover:text-on-surface font-medium text-label-md flex items-center gap-1.5 transition-all">
+          <span class="material-symbols-outlined text-[16px]">list</span>
+          List
+        </button>
+      </div>
+    </div>
+
+    <!-- Right: compact mana curve -->
+    <div class="flex items-center gap-4">
+      <span class="font-label-sm text-[9px] text-primary uppercase tracking-widest font-bold">Mana Curve</span>
+      <div class="flex items-end gap-1.5 h-8">
+        <div class="flex flex-col items-center gap-0.5 h-full justify-end">
+          <div id="curve-bar-1" class="w-5 bg-primary/30 rounded-t-sm transition-all duration-500" style="height:5%"></div>
+          <span class="text-[8px] text-on-surface-variant/40">1</span>
+        </div>
+        <div class="flex flex-col items-center gap-0.5 h-full justify-end">
+          <div id="curve-bar-2" class="w-5 bg-primary/30 rounded-t-sm transition-all duration-500" style="height:5%"></div>
+          <span class="text-[8px] text-on-surface-variant/40">2</span>
+        </div>
+        <div class="flex flex-col items-center gap-0.5 h-full justify-end">
+          <div id="curve-bar-3" class="w-5 bg-primary/30 rounded-t-sm transition-all duration-500" style="height:5%"></div>
+          <span class="text-[8px] text-on-surface-variant/40">3</span>
+        </div>
+        <div class="flex flex-col items-center gap-0.5 h-full justify-end">
+          <div id="curve-bar-4" class="w-5 bg-primary/30 rounded-t-sm transition-all duration-500" style="height:5%"></div>
+          <span class="text-[8px] text-on-surface-variant/40">4</span>
+        </div>
+        <div class="flex flex-col items-center gap-0.5 h-full justify-end">
+          <div id="curve-bar-5" class="w-5 bg-primary/30 rounded-t-sm transition-all duration-500" style="height:5%"></div>
+          <span class="text-[8px] text-on-surface-variant/40">5+</span>
+        </div>
+      </div>
+      <span id="deck-card-count" class="text-[10px] text-on-surface-variant/40">— cards</span>
+    </div>
+  </div>
+
+  <!-- Arrangement tabs bar (workshop only) -->
+  <div id="arrangement-bar" class="flex items-center gap-1 px-margin-desktop border-b border-white/5 bg-surface/20 h-9 flex-shrink-0">
+    <span class="material-symbols-outlined text-[13px] text-on-surface-variant/25 mr-1 flex-shrink-0">layers</span>
+    <div id="arrangement-tabs" class="flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto"></div>
+    <button id="btn-new-arrangement"
+      class="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-on-surface-variant/35 hover:text-on-surface-variant hover:bg-white/8 transition-all ml-1"
+      title="New Arrangement">
+      <span class="material-symbols-outlined text-[16px]">add</span>
+    </button>
+  </div>
+
+  <!-- Canvas area -->
+  <div class="flex-1 relative overflow-hidden bg-[#0D0D0D] canvas-grid" id="workshop-view">
+
+    <!-- Card Search Panel -->
+    <div id="card-search-panel"
+         class="hidden absolute top-0 right-0 h-full w-80 z-[100] flex flex-col"
+         style="background:rgba(20,22,27,0.97);backdrop-filter:blur(40px);border-left:1px solid rgba(255,255,255,0.06)">
+
+      <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
+        <h3 class="font-headline-md text-sm font-bold text-on-surface">Add Card</h3>
+        <button id="search-close"
+          class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/10 transition-all">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="px-3 py-3 border-b border-white/5 flex-shrink-0">
+        <div class="relative">
+          <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/40 text-[18px]">search</span>
+          <input id="card-search-input" type="text" placeholder="Search cards…" autocomplete="off"
+            class="w-full bg-surface-container/60 border border-white/8 rounded-lg py-2 pl-9 pr-3 text-body-md focus:outline-none focus:border-primary/50 placeholder:text-on-surface-variant/30" />
+        </div>
+        <div id="color-filters" class="flex gap-1.5 mt-2">
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all" data-color="W" style="background:#f0d870" title="White"></button>
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all" data-color="U" style="background:#4a7cc9" title="Blue"></button>
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all" data-color="B" style="background:#5a5a5a" title="Black"></button>
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all" data-color="R" style="background:#c0392b" title="Red"></button>
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all" data-color="G" style="background:#27ae60" title="Green"></button>
+          <button class="color-filter-btn w-6 h-6 rounded-full border-2 border-transparent hover:scale-110 transition-all text-[8px] font-bold text-white flex items-center justify-center" data-color="C" style="background:#aaa" title="Colorless">C</button>
+        </div>
+        <div class="flex items-center gap-2 mt-2">
+          <span class="text-[9px] text-on-surface-variant/40 uppercase tracking-wider">Board:</span>
+          <button id="board-main-btn" onclick="setAddBoard('main')"
+            class="px-2 py-0.5 rounded text-[10px] font-bold bg-primary/20 text-primary border border-primary/30 transition-all">Main</button>
+          <button id="board-side-btn" onclick="setAddBoard('sideboard')"
+            class="px-2 py-0.5 rounded text-[10px] font-medium text-on-surface-variant/50 hover:bg-white/5 transition-all">Sideboard</button>
+        </div>
+      </div>
+
+      <div id="card-search-results" class="flex-1 overflow-y-auto px-2 py-2">
+        <div id="search-hint" class="flex flex-col items-center justify-center h-full gap-3 text-center px-4">
+          <span class="material-symbols-outlined text-[40px] text-on-surface-variant/15">playing_cards</span>
+          <p class="text-body-md text-on-surface-variant/35">Type to search</p>
+        </div>
+        <div id="search-no-db" class="hidden flex flex-col items-center justify-center h-full gap-3 text-center px-4">
+          <span class="material-symbols-outlined text-[40px] text-primary/30">sync</span>
+          <p class="text-body-md text-on-surface-variant/50 font-bold">No cards synced yet</p>
+          <p class="text-label-sm text-on-surface-variant/30">Go to Dashboard → Sync Cards</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card Detail Panel -->
+    <div id="card-detail-panel"
+         class="hidden absolute top-0 right-0 h-full w-80 z-[101] flex flex-col"
+         style="background:rgba(20,22,27,0.97);backdrop-filter:blur(40px);border-left:1px solid rgba(255,255,255,0.06)">
+
+      <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
+        <h3 id="detail-title" class="font-headline-md text-sm font-bold text-on-surface truncate">Card Details</h3>
+        <button id="detail-close" class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/10 transition-all flex-shrink-0">
+          <span class="material-symbols-outlined text-[18px]">close</span>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto">
+        <!-- Image -->
+        <div class="relative w-full" style="aspect-ratio:488/680">
+          <img id="detail-img" src="" loading="lazy" class="w-full h-full object-cover"
+               onerror="this.style.display='none';document.getElementById('detail-img-fallback').style.display='flex'" />
+          <div id="detail-img-fallback" class="hidden absolute inset-0 items-center justify-center bg-surface">
+            <span class="material-symbols-outlined text-[64px] opacity-10">playing_cards</span>
+          </div>
+        </div>
+
+        <!-- Info -->
+        <div class="px-4 py-4 space-y-3">
+          <div>
+            <div class="flex items-center justify-between gap-2 mb-0.5">
+              <span id="detail-name" class="font-headline-md text-base font-bold text-on-surface"></span>
+              <div id="detail-mana" class="flex gap-0.5 items-center flex-shrink-0"></div>
+            </div>
+            <p id="detail-type" class="text-[11px] text-on-surface-variant/50"></p>
+          </div>
+
+          <p id="detail-oracle" class="text-[12px] text-on-surface/80 leading-relaxed whitespace-pre-line"></p>
+
+          <div id="detail-stats" class="hidden flex items-center gap-3">
+            <span id="detail-pt" class="text-label-md font-bold text-primary text-sm"></span>
+            <span id="detail-flavor" class="text-[10px] text-on-surface-variant/35 italic leading-relaxed"></span>
+          </div>
+
+          <!-- Legality -->
+          <div id="detail-legality" class="flex flex-wrap gap-1.5"></div>
+
+          <!-- Prices -->
+          <div id="detail-prices" class="hidden flex gap-4">
+            <div class="text-center">
+              <p class="text-[9px] text-on-surface-variant/40 uppercase tracking-wider">USD</p>
+              <p id="detail-price-usd" class="text-label-md font-bold text-on-surface"></p>
+            </div>
+            <div class="text-center">
+              <p class="text-[9px] text-on-surface-variant/40 uppercase tracking-wider">Foil</p>
+              <p id="detail-price-foil" class="text-label-md font-bold text-primary"></p>
+            </div>
+            <div class="text-center">
+              <p class="text-[9px] text-on-surface-variant/40 uppercase tracking-wider">EUR</p>
+              <p id="detail-price-eur" class="text-label-md font-bold text-on-surface"></p>
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div class="flex gap-2 pt-1">
+            <button id="detail-add-deck"
+              class="flex-1 py-2 rounded-lg bg-primary/15 text-primary border border-primary/25 hover:bg-primary/25 transition-all text-label-sm font-bold flex items-center justify-center gap-1.5">
+              <span class="material-symbols-outlined text-[14px]">add</span>Add to Deck
+            </button>
+            <button id="detail-set-cover" title="Set as deck cover"
+              class="w-10 h-9 rounded-lg border border-white/10 text-on-surface-variant hover:bg-white/5 transition-all flex items-center justify-center flex-shrink-0">
+              <span class="material-symbols-outlined text-[16px]">image</span>
+            </button>
+            <button id="detail-add-wishlist"
+              class="w-10 h-9 rounded-lg border border-white/10 text-on-surface-variant hover:bg-white/5 transition-all flex items-center justify-center flex-shrink-0">
+              <span class="material-symbols-outlined text-[16px]">bookmark_add</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Printings picker -->
+        <div id="detail-printings-wrap" class="hidden px-4 pb-4">
+          <p class="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-2">Printings</p>
+          <div id="detail-printings" class="flex gap-2 overflow-x-auto pb-1"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canvas toolbar (bottom-right glass pill) -->
+    <div class="absolute bottom-6 right-6 z-30 glass-panel rounded-xl shadow-2xl flex items-center px-2 py-1.5 gap-0.5 select-none">
+
+      <!-- Add items -->
+      <button id="btn-add-card" title="Add Card"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all text-label-md font-bold">
+        <span class="material-symbols-outlined text-[16px]">playing_cards</span>
+        Card
+      </button>
+      <button id="btn-add-group" title="Add Group"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all text-label-md font-bold">
+        <span class="material-symbols-outlined text-[16px]">folder_open</span>
+        Group
+      </button>
+      <button id="btn-add-sticker" title="Add Note"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all text-label-md font-bold">
+        <span class="material-symbols-outlined text-[16px]">sticky_note_2</span>
+        Note
+      </button>
+
+      <div class="w-px h-5 bg-white/10 mx-1"></div>
+
+      <!-- Zoom -->
+      <button id="btn-zoom-out"
+        class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all">
+        <span class="material-symbols-outlined text-[18px]">remove</span>
+      </button>
+      <span id="zoom-label" class="text-[11px] font-bold text-on-surface-variant/60 w-10 text-center tabular-nums">100%</span>
+      <button id="btn-zoom-in"
+        class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all">
+        <span class="material-symbols-outlined text-[18px]">add</span>
+      </button>
+      <button id="btn-zoom-fit" title="Reset view (fit)"
+        class="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/8 hover:text-primary transition-all ml-0.5">
+        <span class="material-symbols-outlined text-[18px]">center_focus_strong</span>
+      </button>
+
+      <div class="w-px h-5 bg-white/10 mx-1"></div>
+
+      <!-- Space-to-pan hint -->
+      <span class="text-[9px] text-on-surface-variant/30 font-medium pr-1 leading-tight">
+        Space<br>to pan
+      </span>
+    </div>
+
+    <!-- Group context menu (positioned in workshop-view space) -->
+    <div id="group-menu"
+         class="hidden absolute z-[600] glass-panel rounded-xl shadow-2xl py-1.5 min-w-[164px]"
+         style="border:1px solid rgba(255,255,255,0.07)">
+
+      <button onclick="menuRename()"
+              class="w-full flex items-center gap-2.5 px-3 py-2 text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all text-label-md">
+        <span class="material-symbols-outlined text-[16px]">edit</span>
+        Rename
+      </button>
+
+      <div class="px-3 py-2 border-t border-white/5">
+        <p class="text-[9px] text-on-surface-variant/40 uppercase tracking-widest mb-2 font-bold">Color</p>
+        <div class="flex gap-1.5">
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#f2ca83" onclick="menuChangeColor('#f2ca83')"></button>
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#bcd0ff" onclick="menuChangeColor('#bcd0ff')"></button>
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#86efac" onclick="menuChangeColor('#86efac')"></button>
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#c4c6cd" onclick="menuChangeColor('#c4c6cd')"></button>
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#d4aa7d" onclick="menuChangeColor('#d4aa7d')"></button>
+          <button class="menu-color-swatch w-5 h-5 rounded-full transition-all hover:scale-110"
+                  style="background:#c084fc" onclick="menuChangeColor('#c084fc')"></button>
+        </div>
+      </div>
+
+      <div class="border-t border-white/5 mt-1"></div>
+
+      <button onclick="menuDelete()"
+              class="w-full flex items-center gap-2.5 px-3 py-2 text-red-400/70 hover:bg-red-500/10 hover:text-red-400 transition-all text-label-md mt-1">
+        <span class="material-symbols-outlined text-[16px]">delete_outline</span>
+        Delete Group
+      </button>
+    </div>
+
+    <!-- Add Group modal -->
+    <div id="add-group-modal"
+      class="hidden absolute inset-0 z-50 flex items-center justify-center"
+      style="background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)">
+      <div class="glass-panel rounded-2xl p-6 w-80 shadow-2xl border border-white/8">
+        <h3 class="font-headline-md text-base text-on-surface font-bold mb-4">New Group</h3>
+
+        <label class="text-label-md text-on-surface-variant/60 block mb-1.5">Name</label>
+        <input id="group-name-input" type="text" placeholder="e.g. Creatures"
+          class="w-full bg-surface-container/60 border border-white/8 rounded-lg px-3 py-2 text-body-md text-on-surface focus:outline-none focus:border-primary/50 mb-4 placeholder:text-on-surface-variant/30"/>
+
+        <label class="text-label-md text-on-surface-variant/60 block mb-2">Color</label>
+        <div class="flex gap-2 mb-6" id="color-swatches">
+          <button class="color-swatch w-6 h-6 rounded-full ring-2 ring-white/50 ring-offset-1 ring-offset-black/40 transition-all" data-idx="0" style="background:#f2ca83" title="Gold"></button>
+          <button class="color-swatch w-6 h-6 rounded-full ring-0 transition-all" data-idx="1" style="background:#bcd0ff" title="Blue"></button>
+          <button class="color-swatch w-6 h-6 rounded-full ring-0 transition-all" data-idx="2" style="background:#86efac" title="Green"></button>
+          <button class="color-swatch w-6 h-6 rounded-full ring-0 transition-all" data-idx="3" style="background:#c4c6cd" title="Silver"></button>
+          <button class="color-swatch w-6 h-6 rounded-full ring-0 transition-all" data-idx="4" style="background:#d4aa7d" title="Brown"></button>
+          <button class="color-swatch w-6 h-6 rounded-full ring-0 transition-all" data-idx="5" style="background:#c084fc" title="Purple"></button>
+        </div>
+
+        <div class="flex gap-3">
+          <button id="add-group-cancel"
+            class="flex-1 py-2 rounded-lg border border-white/8 text-on-surface-variant text-label-md font-bold hover:bg-white/5 transition-all">
+            Cancel
+          </button>
+          <button id="add-group-confirm"
+            class="flex-1 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-label-md font-bold hover:bg-primary/20 transition-all">
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canvas (infinite, transformed) -->
+    <div id="canvas">
+    </div>
+  </div>
+
+
+<!-- List view (toggled by tab) -->
+<div id="list-view" class="hidden flex-1 overflow-y-auto bg-background">
+  <div id="list-content" class="max-w-4xl mx-auto px-8 py-6">
+    <div class="flex items-center justify-center h-32 gap-2 text-on-surface-variant/30">
+      <span class="material-symbols-outlined text-[20px]">style</span>
+      <span class="text-body-md">Switch to List view to see deck cards</span>
+    </div>
+  </div>
+</div>
+
+<!-- New Deck Modal -->
+<div id="new-deck-modal" class="hidden fixed inset-0 z-[200] flex items-center justify-center">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeNewDeckModal()"></div>
+  <div class="relative glass-panel rounded-2xl p-8 w-[420px] shadow-2xl">
+    <h2 class="font-headline-md text-xl text-on-surface mb-6">New Deck</h2>
+    <div class="space-y-4">
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Deck Name</label>
+        <input id="new-deck-name" type="text" placeholder="e.g. Urza's Contraption"
+          class="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all placeholder:text-on-surface-variant/30" />
+      </div>
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Format</label>
+        <select id="new-deck-format"
+          class="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all">
+          <option value="commander">Commander</option>
+          <option value="modern">Modern</option>
+          <option value="standard">Standard</option>
+          <option value="pioneer">Pioneer</option>
+          <option value="legacy">Legacy</option>
+          <option value="pauper">Pauper</option>
+        </select>
+      </div>
+    </div>
+    <div class="flex gap-3 mt-8">
+      <button onclick="closeNewDeckModal()" class="flex-1 py-2.5 rounded-lg border border-white/10 text-on-surface-variant hover:bg-white/5 transition-all font-bold">Cancel</button>
+      <button onclick="submitNewDeck()" class="flex-1 py-2.5 rounded-lg bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-all font-bold">Create Deck</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Folder Modal (sidebar) -->
+<div id="sidebar-new-folder-modal" class="hidden fixed inset-0 z-[200] flex items-center justify-center">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeSidebarNewFolderModal()"></div>
+  <div class="relative glass-panel rounded-2xl p-8 w-[380px] shadow-2xl">
+    <h2 class="font-headline-md text-xl text-on-surface mb-6">New Folder</h2>
+    <input id="sidebar-new-folder-name" type="text" placeholder="e.g. Legacy Decks"
+      class="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all placeholder:text-on-surface-variant/30 mb-6" />
+    <div class="flex gap-3">
+      <button onclick="closeSidebarNewFolderModal()" class="flex-1 py-2.5 rounded-lg border border-white/10 text-on-surface-variant hover:bg-white/5 transition-all font-bold">Cancel</button>
+      <button onclick="submitSidebarNewFolder()" class="flex-1 py-2.5 rounded-lg bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-all font-bold">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Deck Settings Modal -->
+<div id="deck-settings-modal" class="hidden fixed inset-0 z-[200] flex items-center justify-center">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick="closeDeckSettings()"></div>
+  <div class="relative glass-panel rounded-2xl p-8 w-[400px] shadow-2xl">
+    <h2 class="font-headline-md text-xl text-on-surface mb-6">Deck Settings</h2>
+    <div class="space-y-4">
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Name</label>
+        <input id="settings-name" type="text" class="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all" />
+      </div>
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Format</label>
+        <select id="settings-format" class="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all">
+          <option value="commander">Commander</option>
+          <option value="modern">Modern</option>
+          <option value="standard">Standard</option>
+          <option value="pioneer">Pioneer</option>
+          <option value="legacy">Legacy</option>
+          <option value="pauper">Pauper</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Power Level <span id="settings-power-display" class="text-primary normal-case tracking-normal font-normal">5</span></label>
+        <input id="settings-power" type="range" min="1" max="10" value="5"
+          class="w-full accent-primary" oninput="document.getElementById('settings-power-display').textContent=this.value" />
+        <div class="flex justify-between text-[9px] text-on-surface-variant/30 mt-1">
+          <span>Casual</span><span>Focused</span><span>Optimized</span><span>Competitive</span>
+        </div>
+      </div>
+      <div>
+        <label class="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-2 block">Color Identity</label>
+        <div id="settings-color-identity" class="flex gap-2">
+          <button type="button" data-color="W" class="color-identity-btn w-8 h-8 rounded-full border-2 border-transparent hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold text-black" style="background:#f0d870" title="White">W</button>
+          <button type="button" data-color="U" class="color-identity-btn w-8 h-8 rounded-full border-2 border-transparent hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold text-white" style="background:#4a7cc9" title="Blue">U</button>
+          <button type="button" data-color="B" class="color-identity-btn w-8 h-8 rounded-full border-2 border-transparent hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold text-white" style="background:#2a2a2a;border-color:#888" title="Black">B</button>
+          <button type="button" data-color="R" class="color-identity-btn w-8 h-8 rounded-full border-2 border-transparent hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold text-white" style="background:#c0392b" title="Red">R</button>
+          <button type="button" data-color="G" class="color-identity-btn w-8 h-8 rounded-full border-2 border-transparent hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold text-white" style="background:#27ae60" title="Green">G</button>
+        </div>
+      </div>
+      <label class="flex items-center gap-3 cursor-pointer">
+        <input id="settings-favorite" type="checkbox" class="w-4 h-4 accent-primary" />
+        <span class="text-body-md text-on-surface-variant">Mark as favorite</span>
+      </label>
+    </div>
+    <div class="flex gap-3 mt-8">
+      <button onclick="closeDeckSettings()" class="flex-1 py-2.5 rounded-lg border border-white/10 text-on-surface-variant hover:bg-white/5 transition-all font-bold">Cancel</button>
+      <button onclick="saveDeckSettings()" class="flex-1 py-2.5 rounded-lg bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-all font-bold">Save</button>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// KarnForge Workshop Canvas
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const wv = document.getElementById('workshop-view');
+const cv = document.getElementById('canvas');
+
+// ── Transform ─────────────────────────────────────────────────────────────────
+let tx = 80, ty = 60, sc = 1;
+const SMIN = 0.2, SMAX = 2.5;
+
+function applyT() {
+  cv.style.transform = `translate(${tx}px,${ty}px) scale(${sc})`;
+  document.getElementById('zoom-label').textContent = Math.round(sc * 100) + '%';
+}
+function s2c(sx, sy) {
+  const r = wv.getBoundingClientRect();
+  return { x: (sx - r.left - tx) / sc, y: (sy - r.top - ty) / sc };
+}
+function zoomAt(cx, cy, f) {
+  const ns = Math.min(SMAX, Math.max(SMIN, sc * f));
+  const ratio = ns / sc;
+  tx = cx - (cx - tx) * ratio;
+  ty = cy - (cy - ty) * ratio;
+  sc = ns; applyT();
+}
+
+// ── Scroll to zoom ────────────────────────────────────────────────────────────
+wv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = wv.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.12 : 0.88);
+}, { passive: false });
+
+document.getElementById('btn-zoom-in').addEventListener('click', e => {
+  e.stopPropagation();
+  const r = wv.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1.2);
+});
+document.getElementById('btn-zoom-out').addEventListener('click', e => {
+  e.stopPropagation();
+  const r = wv.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1/1.2);
+});
+document.getElementById('btn-zoom-fit').addEventListener('click', e => {
+  e.stopPropagation(); tx = 80; ty = 60; sc = 1; applyT();
+});
+
+// ── Space = temporary pan; Escape = clear selection; Ctrl+A = select all ──────
+let spaceHeld = false;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.target.matches('input,textarea')) {
+    e.preventDefault(); spaceHeld = true; wv.style.cursor = 'grab';
+  }
+  if (e.code === 'Escape') clearSel();
+  if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+    e.preventDefault();
+    document.querySelectorAll('.canvas-item').forEach(selectEl);
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea')) {
+    if (sel.size > 0) {
+      e.preventDefault();
+      sel.forEach(el => el.remove());
+      sel.clear();
+      scheduleAutoSave();
+    }
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space') { spaceHeld = false; wv.style.cursor = ''; }
+});
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+const sel = new Set();
+const selBox = document.createElement('div');
+selBox.id = 'sel-box'; cv.appendChild(selBox);
+
+function clearSel() {
+  sel.forEach(el => el.classList.remove('selected')); sel.clear();
+}
+function selectEl(el) { el.classList.add('selected'); sel.add(el); }
+
+function hitTestRect(el, x1, y1, x2, y2) {
+  const l = parseFloat(el.style.left), t = parseFloat(el.style.top);
+  return l < x2 && (l + el.offsetWidth) > x1 && t < y2 && (t + el.offsetHeight) > y1;
+}
+
+// ── Drag engine ───────────────────────────────────────────────────────────────
+let drag = null, pan = null, rband = null;
+
+// Background: space+drag = pan, drag = rubber-band select
+wv.addEventListener('mousedown', e => {
+  if (e.target !== wv && e.target !== cv && e.target !== selBox) return;
+  e.preventDefault();
+  if (spaceHeld) {
+    pan = { ox: e.clientX - tx, oy: e.clientY - ty };
+    wv.style.cursor = 'grabbing';
+  } else {
+    const cp = s2c(e.clientX, e.clientY);
+    rband = { sx: cp.x, sy: cp.y };
+    selBox.style.cssText = `display:block;left:${cp.x}px;top:${cp.y}px;width:0;height:0;`;
+    if (!e.shiftKey) clearSel();
+  }
+});
+
+document.addEventListener('mousemove', e => {
+  if (pan) { tx = e.clientX - pan.ox; ty = e.clientY - pan.oy; applyT(); return; }
+  if (rband) {
+    const cp = s2c(e.clientX, e.clientY);
+    const x1 = Math.min(cp.x, rband.sx), y1 = Math.min(cp.y, rband.sy);
+    const x2 = Math.max(cp.x, rband.sx), y2 = Math.max(cp.y, rband.sy);
+    selBox.style.left = x1+'px'; selBox.style.top = y1+'px';
+    selBox.style.width = (x2-x1)+'px'; selBox.style.height = (y2-y1)+'px';
+    return;
+  }
+  if (!drag) return;
+  const cp = s2c(e.clientX, e.clientY);
+  if (drag.type === 'multi') {
+    const dx = cp.x - drag.ox, dy = cp.y - drag.oy;
+    drag.init.forEach((p, el) => { el.style.left=(p.l+dx)+'px'; el.style.top=(p.t+dy)+'px'; });
+  } else {
+    drag.el.style.left = (cp.x - drag.ox) + 'px';
+    drag.el.style.top  = (cp.y - drag.oy) + 'px';
+    if (drag.elType === 'card') {
+      document.querySelectorAll('.group-container').forEach(g =>
+        g.classList.toggle('group-drop-highlight', hitTest(e, g)));
+    }
+  }
+});
+
+document.addEventListener('mouseup', e => {
+  if (pan) { pan = null; wv.style.cursor = spaceHeld ? 'grab' : ''; return; }
+  if (rband) {
+    const cp = s2c(e.clientX, e.clientY);
+    const x1 = Math.min(cp.x,rband.sx), y1 = Math.min(cp.y,rband.sy);
+    const x2 = Math.max(cp.x,rband.sx), y2 = Math.max(cp.y,rband.sy);
+    if (x2-x1 > 4 || y2-y1 > 4)
+      document.querySelectorAll('.canvas-item').forEach(el => {
+        if (hitTestRect(el, x1, y1, x2, y2)) selectEl(el);
+      });
+    rband = null; selBox.style.display = 'none'; return;
+  }
+  if (!drag) return;
+  const { type } = drag;
+  if (type === 'multi') {
+    drag.init.forEach((_, el) => el.style.zIndex = el.dataset.baseZ || 10);
+  } else {
+    const { el, elType } = drag;
+    el.style.zIndex = el.dataset.baseZ || 10;
+    if (elType === 'card') {
+      el.style.filter = ''; el.style.transform = '';
+      let dropped = false;
+      document.querySelectorAll('.group-container').forEach(g => {
+        g.classList.remove('group-drop-highlight');
+        if (!dropped && hitTest(e, g)) { dropIntoGroup(el, g); dropped = true; }
+      });
+    }
+  }
+  drag = null;
+  scheduleAutoSave();
+});
+
+function hitTest(me, el) {
+  const r = el.getBoundingClientRect();
+  return me.clientX > r.left && me.clientX < r.right &&
+         me.clientY > r.top  && me.clientY < r.bottom;
+}
+
+// ── Make element draggable on canvas ──────────────────────────────────────────
+function draggable(el, elType) {
+  el.dataset.elType = elType;
+  el.style.cursor = 'grab';
+  el.addEventListener('mousedown', e => {
+    if (e.target.closest('button, a, input, textarea')) return;
+    e.stopPropagation(); e.preventDefault();
+    el.style.cursor = 'grabbing';
+
+    if (sel.has(el) && sel.size > 1) {
+      // Move entire selection together
+      const cp = s2c(e.clientX, e.clientY);
+      const init = new Map();
+      sel.forEach(s => {
+        const l = parseFloat(s.style.left) || s.offsetLeft;
+        const t = parseFloat(s.style.top)  || s.offsetTop;
+        s.style.left = l+'px'; s.style.top = t+'px'; s.style.zIndex = 500;
+        init.set(s, { l, t });
+      });
+      drag = { type: 'multi', ox: cp.x, oy: cp.y, init };
+    } else {
+      if (!e.shiftKey) clearSel();
+      selectEl(el);
+      const left = parseFloat(el.style.left) || el.offsetLeft;
+      const top  = parseFloat(el.style.top)  || el.offsetTop;
+      el.style.left = left+'px'; el.style.top = top+'px';
+      const cp = s2c(e.clientX, e.clientY);
+      drag = { type: 'single', el, elType, ox: cp.x - left, oy: cp.y - top };
+      el.style.zIndex = 500;
+      if (elType === 'card') {
+        el.style.filter    = 'drop-shadow(0 20px 48px rgba(0,0,0,.9))';
+        el.style.transform = 'scale(1.06) rotate(2deg)';
+      }
+    }
+  });
+}
+
+// ── Eject card from group → free canvas ──────────────────────────────────────
+function ejectCard(cardEl, e) {
+  const cr = cardEl.getBoundingClientRect(), wvr = wv.getBoundingClientRect();
+  const left = (cr.left - wvr.left - tx) / sc;
+  const top  = (cr.top  - wvr.top  - ty) / sc;
+  cardEl.remove();
+  // Hide stacking back-layers — visual only inside groups
+  cardEl.querySelectorAll('.card-layer-1,.card-layer-2').forEach(l => l.style.display = 'none');
+  cardEl.style.cssText = `position:absolute;left:${left}px;top:${top}px;z-index:20;`;
+  cardEl.dataset.baseZ = 20;
+  cardEl.classList.add('canvas-item');
+  cv.appendChild(cardEl);
+  draggable(cardEl, 'card');
+  clearSel(); selectEl(cardEl);
+  const cp = s2c(e.clientX, e.clientY);
+  drag = { type: 'single', el: cardEl, elType: 'card', ox: cp.x - left, oy: cp.y - top };
+  cardEl.style.zIndex    = 500;
+  cardEl.style.filter    = 'drop-shadow(0 20px 48px rgba(0,0,0,.9))';
+  cardEl.style.transform = 'scale(1.06) rotate(2deg)';
+  e.stopPropagation(); e.preventDefault();
+}
+
+// ── Drop free card into group ─────────────────────────────────────────────────
+function dropIntoGroup(cardEl, groupEl) {
+  cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
+  cardEl.classList.remove('canvas-item', 'selected');
+  sel.delete(cardEl);
+  // Restore stacking back-layers now the card is inside a group
+  cardEl.querySelectorAll('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
+  cv.removeChild(cardEl);
+  groupEl.querySelector('.card-list').appendChild(cardEl);
+  cardEl.addEventListener('mousedown', function onDown(e) {
+    if (e.target.closest('button, a')) return;
+    cardEl.removeEventListener('mousedown', onDown);
+    ejectCard(cardEl, e);
+  });
+  makeCardClickable(cardEl);
+}
+
+// ── Add Group ─────────────────────────────────────────────────────────────────
+const GC = [
+  { name: 'Creatures',     color: '#f2ca83' },
+  { name: 'Spells',        color: '#bcd0ff' },
+  { name: 'Enchantments',  color: '#86efac' },
+  { name: 'Artifacts',     color: '#c4c6cd' },
+  { name: 'Lands',         color: '#d4aa7d' },
+  { name: 'Planeswalkers', color: '#c084fc' },
+];
+let gcIdx = 0;
+
+document.getElementById('btn-add-group').addEventListener('click', e => {
+  e.stopPropagation();
+  document.getElementById('add-group-modal').classList.remove('hidden');
+  const inp = document.getElementById('group-name-input');
+  inp.value = GC[gcIdx].name; inp.focus(); inp.select();
+});
+document.getElementById('add-group-cancel').addEventListener('click', () =>
+  document.getElementById('add-group-modal').classList.add('hidden'));
+document.getElementById('add-group-confirm').addEventListener('click', createGroup);
+document.getElementById('group-name-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createGroup();
+  if (e.key === 'Escape') document.getElementById('add-group-modal').classList.add('hidden');
+});
+document.querySelectorAll('.color-swatch').forEach(sw => {
+  sw.addEventListener('click', () => {
+    document.querySelectorAll('.color-swatch').forEach(s => s.style.outline = 'none');
+    sw.style.outline = '2px solid white';
+    sw.style.outlineOffset = '2px';
+    gcIdx = parseInt(sw.dataset.idx);
+    const inp = document.getElementById('group-name-input');
+    if (!inp.value || GC.some(g => g.name === inp.value)) inp.value = GC[gcIdx].name;
+  });
+});
+
+function makeGroupEl(name, color) {
+  const g = document.createElement('div');
+  g.className = 'absolute group-container canvas-item';
+  g.dataset.baseZ = '10';
+  g.dataset.name = name;
+  g.dataset.color = color;
+  g.style.borderColor = color + '55';
+  g.innerHTML = `
+    <div class="flex items-center justify-between mb-6">
+      <div class="flex items-center gap-3">
+        <div class="w-3 h-3 rounded-full flex-shrink-0"
+             style="background:${color};box-shadow:0 0 8px ${color}55"></div>
+        <h3 class="font-label-md text-label-md uppercase tracking-widest font-bold" style="color:${color}">
+          ${esc(name)} <span class="opacity-50 font-normal ml-1">(0)</span>
+        </h3>
+      </div>
+      <button onclick="openGroupMenu(this,this.closest('.group-container'))"
+              class="text-on-surface-variant hover:text-primary transition-colors ml-4 flex-shrink-0">
+        <span class="material-symbols-outlined text-[18px]">more_vert</span>
+      </button>
+    </div>
+    <div class="card-list flex flex-wrap gap-10 min-h-[60px]"></div>`;
+  return g;
+}
+
+function createGroup() {
+  document.getElementById('add-group-modal').classList.add('hidden');
+  const name = document.getElementById('group-name-input').value.trim() || GC[gcIdx].name;
+  const gc   = GC[gcIdx];
+  const r    = wv.getBoundingClientRect();
+  const cp   = s2c(r.left + r.width/2, r.top + r.height/2);
+  const g    = makeGroupEl(name, gc.color);
+  g.style.cssText = `left:${cp.x-210}px;top:${cp.y-80}px;z-index:10;border-color:${gc.color}55;`;
+  cv.appendChild(g);
+  draggable(g, 'group');
+  document.getElementById('group-name-input').value = '';
+  scheduleAutoSave();
+}
+
+// ── Card Search Panel ──────────────────────────────────────────────────────────
+const searchPanel = document.getElementById('card-search-panel');
+const searchInput = document.getElementById('card-search-input');
+let searchTimer = null;
+
+document.getElementById('btn-add-card').addEventListener('click', e => {
+  e.stopPropagation();
+  openSearchPanel();
+});
+
+document.getElementById('search-close').addEventListener('click', () => {
+  searchPanel.classList.add('hidden');
+});
+
+async function openSearchPanel() {
+  searchPanel.classList.remove('hidden');
+  searchInput.value = '';
+  renderSearchResults([]);
+  searchInput.focus();
+  try {
+    const status = await window.cardsAPI.getStatus();
+    if (!status || !status.cardCount) {
+      document.getElementById('search-hint').classList.add('hidden');
+      document.getElementById('search-no-db').classList.remove('hidden');
+    } else {
+      document.getElementById('search-no-db').classList.add('hidden');
+      document.getElementById('search-hint').classList.remove('hidden');
+    }
+  } catch { /* ignore */ }
+}
+
+searchInput.addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (!q) { renderSearchResults([]); return; }
+  searchTimer = setTimeout(() => runSearch(q), 180);
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { searchPanel.classList.add('hidden'); e.stopPropagation(); }
+});
+
+async function runSearch(q) {
+  try {
+    const { cards } = await window.cardsAPI.search({ q, pageSize: 40 });
+    renderSearchResults(applyColorFilter(cards), q);
+  } catch (err) { console.error('Search error:', err); }
+}
+
+const MANA_HEX = { W:'#f0d870', U:'#4a7cc9', B:'#3a3a3a', R:'#c0392b', G:'#27ae60', C:'#aaa' };
+
+function pipHtml(manaCost) {
+  const out = [];
+  for (const m of (manaCost || '').matchAll(/\{([^}]+)\}/g)) {
+    const sym = m[1].toUpperCase();
+    const bg = MANA_HEX[sym];
+    if (bg) {
+      out.push(`<span style="width:10px;height:10px;border-radius:50%;background:${bg};display:inline-block;flex-shrink:0"></span>`);
+    } else {
+      out.push(`<span style="width:10px;height:10px;border-radius:50%;background:#444;display:inline-flex;align-items:center;justify-content:center;font-size:7px;color:#ccc;flex-shrink:0">${esc(m[1])}</span>`);
+    }
+  }
+  return out.join('');
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderSearchResults(cards, q = '') {
+  const container = document.getElementById('card-search-results');
+  const hint = document.getElementById('search-hint');
+  const noDb = document.getElementById('search-no-db');
+
+  // Remove previous result rows
+  Array.from(container.children).forEach(el => {
+    if (el.id !== 'search-hint' && el.id !== 'search-no-db') el.remove();
+  });
+
+  if (!cards.length) {
+    hint.querySelector('p').textContent = q ? 'No cards found' : 'Type to search';
+    hint.classList.remove('hidden');
+    return;
+  }
+
+  hint.classList.add('hidden');
+  noDb.classList.add('hidden');
+
+  for (const card of cards) {
+    const btn = document.createElement('button');
+    btn.className = 'w-full flex items-start gap-2 px-3 py-2.5 rounded-lg hover:bg-white/5 active:bg-white/10 transition-all text-left';
+    btn.innerHTML = `
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-label-md font-bold text-on-surface truncate">${esc(card.name)}</span>
+          <div class="flex gap-0.5 items-center flex-shrink-0">${pipHtml(card.mana_cost)}</div>
+        </div>
+        <p class="text-[10px] text-on-surface-variant/45 truncate mt-0.5">${esc(card.type_line || '')}</p>
+      </div>`;
+    btn.addEventListener('click', () => addCardFromSearch(card));
+    container.appendChild(btn);
+  }
+}
+
+async function addCardFromSearch(card) {
+  const deckId = getDeckId();
+  if (deckId) {
+    try {
+      await window.libraryAPI.addCardToDeck({ deckId: parseInt(deckId, 10), oracleId: card.oracle_id, board: currentAddBoard });
+      try { await window.libraryAPI.logActivity({ event: 'card_added', deckId: parseInt(deckId, 10), oracleId: card.oracle_id }); } catch {}
+    } catch (err) { console.error('addCardToDeck failed:', err); }
+  }
+  if (currentAddBoard === 'main') spawnCardOnCanvas(card);
+  loadDeck();
+}
+
+function getImageUrl(card) {
+  const fd = card.full_data;
+  if (!fd) return '';
+  if (fd.image_uris) return fd.image_uris.normal || fd.image_uris.small || '';
+  if (fd.card_faces && fd.card_faces[0] && fd.card_faces[0].image_uris)
+    return fd.card_faces[0].image_uris.normal || '';
+  return '';
+}
+
+function makeCardEl(data) {
+  const el = document.createElement('div');
+  el.className = 'card-stack w-40 h-[240px] canvas-item';
+  el.dataset.baseZ = '20';
+  el.dataset.oracleId = data.oracleId || '';
+  el.dataset.cardJson = JSON.stringify({
+    oracleId: data.oracleId || '', name: data.name || '',
+    typeLine: data.typeLine || '', manaCost: data.manaCost || '',
+    imageUrl: data.imageUrl || ''
+  });
+  const imgUrl = data.imageUrl || '';
+  el.innerHTML = `
+    <div class="card-layer card-layer-1"></div>
+    <div class="card-layer card-layer-2"></div>
+    <div class="card-layer relative overflow-hidden shadow-2xl flex flex-col" style="background:#1a1d22;border-radius:0.75rem">
+      <div class="flex items-center justify-between px-2 py-1.5 flex-shrink-0 gap-1" style="background:rgba(0,0,0,0.75)">
+        <span class="text-[9px] font-bold text-white truncate flex-1">${esc(data.name || '')}</span>
+        <div class="flex gap-0.5 items-center flex-shrink-0">${pipHtml(data.manaCost || '')}</div>
+      </div>
+      ${imgUrl
+        ? `<img src="${imgUrl}" loading="lazy" class="flex-1 w-full object-cover object-top"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+           <div class="flex-1 items-center justify-center" style="display:none">
+             <span class="material-symbols-outlined text-[48px] opacity-10">playing_cards</span>
+           </div>`
+        : `<div class="flex-1 flex items-center justify-center">
+             <span class="material-symbols-outlined text-[48px] opacity-10">playing_cards</span>
+           </div>`}
+      <div class="px-2 py-1 flex-shrink-0" style="background:rgba(0,0,0,0.75)">
+        <p class="text-[8px] truncate" style="color:rgba(255,255,255,0.45)">${esc(data.typeLine || '')}</p>
+      </div>
+    </div>`;
+  return el;
+}
+
+let spawnIndex = 0;
+function spawnCardOnCanvas(card) {
+  const r  = wv.getBoundingClientRect();
+  const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
+  const offset = spawnIndex * 28;
+  spawnIndex = (spawnIndex + 1) % 9;
+  const data = {
+    oracleId: card.oracle_id || '',
+    name: card.name || '',
+    typeLine: card.type_line || '',
+    manaCost: card.mana_cost || '',
+    imageUrl: getImageUrl(card),
+  };
+  const el = makeCardEl(data);
+  el.style.cssText = `position:absolute;left:${cp.x - 80 + offset}px;top:${cp.y - 120 + offset}px;z-index:20;cursor:grab;`;
+  el.querySelectorAll('.card-layer-1,.card-layer-2').forEach(l => l.style.display = 'none');
+  cv.appendChild(el);
+  draggable(el, 'card');
+  clearSel();
+  selectEl(el);
+  makeCardClickable(el);
+  scheduleAutoSave();
+}
+
+// ── Card Detail Panel ──────────────────────────────────────────────────────────
+let detailOracleId = null;
+let detailScryfallId = null;
+let detailImgUrl = null;
+
+document.getElementById('detail-close').addEventListener('click', closeDetailPanel);
+
+function closeDetailPanel() {
+  document.getElementById('card-detail-panel').classList.add('hidden');
+  detailOracleId = null;
+}
+
+async function openCardDetail(oracleId) {
+  if (!oracleId) return;
+  detailOracleId = oracleId;
+  // Close search panel if open
+  document.getElementById('card-search-panel').classList.add('hidden');
+  const panel = document.getElementById('card-detail-panel');
+  panel.classList.remove('hidden');
+
+  // Reset state
+  document.getElementById('detail-img').style.display = '';
+  document.getElementById('detail-img-fallback').style.display = 'none';
+  document.getElementById('detail-img').src = '';
+  document.getElementById('detail-title').textContent = 'Loading…';
+  document.getElementById('detail-name').textContent = '';
+  document.getElementById('detail-mana').innerHTML = '';
+  document.getElementById('detail-type').textContent = '';
+  document.getElementById('detail-oracle').textContent = '';
+  document.getElementById('detail-stats').classList.add('hidden');
+  document.getElementById('detail-legality').innerHTML = '';
+  document.getElementById('detail-prices').classList.add('hidden');
+  document.getElementById('detail-printings-wrap').classList.add('hidden');
+
+  try {
+    const [card, images] = await Promise.all([
+      window.cardsAPI.getCard({ oracleId }),
+      window.cardsAPI.getCardImages({ oracleId }),
+    ]);
+    if (!card) { document.getElementById('detail-title').textContent = 'Not found'; return; }
+
+    const fd = card.full_data || {};
+
+    // Title + name
+    document.getElementById('detail-title').textContent = card.name;
+    document.getElementById('detail-name').textContent = card.name;
+    document.getElementById('detail-mana').innerHTML = pipHtml(card.mana_cost || '');
+    document.getElementById('detail-type').textContent = card.type_line || '';
+
+    // Image — prefer most recent non-promo printing
+    const bestImg = (images || []).find(i => !i.promo && i.image_uris)
+      || (images || []).find(i => i.image_uris)
+      || null;
+    const imgUrl = bestImg?.image_uris?.normal
+      || fd.image_uris?.normal
+      || (fd.card_faces?.[0]?.image_uris?.normal)
+      || '';
+    detailScryfallId = bestImg?.id || fd.id || null;
+    detailImgUrl = imgUrl || null;
+    if (imgUrl) document.getElementById('detail-img').src = imgUrl;
+    else { document.getElementById('detail-img').style.display = 'none'; document.getElementById('detail-img-fallback').style.display = 'flex'; }
+
+    // Oracle text — render mana symbols inline
+    const oracle = card.oracle_text || '';
+    document.getElementById('detail-oracle').innerHTML = oracle.replace(/\{([^}]+)\}/g, (_, sym) => {
+      const bg = ({ W:'#f0d870', U:'#4a7cc9', B:'#3a3a3a', R:'#c0392b', G:'#27ae60', C:'#aaa' })[sym.toUpperCase()] || '#555';
+      return `<span style="width:12px;height:12px;border-radius:50%;background:${bg};display:inline-block;vertical-align:middle;margin:0 1px"></span>`;
+    });
+
+    // P/T or Loyalty
+    const statsEl = document.getElementById('detail-stats');
+    const ptEl = document.getElementById('detail-pt');
+    if (card.power || card.loyalty) {
+      ptEl.textContent = card.power ? `${card.power}/${card.toughness}` : `[${card.loyalty}]`;
+      statsEl.classList.remove('hidden');
+    }
+    document.getElementById('detail-flavor').textContent = fd.flavor_text || '';
+
+    // Legality
+    const legalFormats = ['standard','pioneer','modern','legacy','vintage','commander','pauper'];
+    const legalities = fd.legalities || {};
+    const legalHtml = legalFormats.map(f => {
+      const val = legalities[f] || 'not_legal';
+      const legal = val === 'legal';
+      const restricted = val === 'restricted';
+      const bg = legal ? 'rgba(39,174,96,0.2)' : restricted ? 'rgba(192,57,43,0.15)' : 'rgba(255,255,255,0.04)';
+      const color = legal ? '#27ae60' : restricted ? '#c0392b' : 'rgba(255,255,255,0.2)';
+      const label = f.charAt(0).toUpperCase() + f.slice(1);
+      return `<span style="font-size:9px;padding:2px 6px;border-radius:4px;background:${bg};color:${color};font-weight:600;text-transform:uppercase;letter-spacing:.05em">${label}</span>`;
+    }).join('');
+    document.getElementById('detail-legality').innerHTML = legalHtml;
+
+    // Prices
+    const prices = fd.prices || {};
+    if (prices.usd || prices.eur) {
+      document.getElementById('detail-price-usd').textContent = prices.usd ? `$${prices.usd}` : '—';
+      document.getElementById('detail-price-foil').textContent = prices.usd_foil ? `$${prices.usd_foil}` : '—';
+      document.getElementById('detail-price-eur').textContent = prices.eur ? `€${prices.eur}` : '—';
+      document.getElementById('detail-prices').classList.remove('hidden');
+    }
+
+    // Printings picker
+    if (images && images.length > 1) {
+      const container = document.getElementById('detail-printings');
+      container.innerHTML = '';
+      images.forEach(img => {
+        const thumb = img.image_uris?.small || img.image_uris?.normal || '';
+        const btn = document.createElement('button');
+        btn.className = 'flex-shrink-0 rounded-md overflow-hidden border-2 border-transparent hover:border-primary/60 transition-all';
+        btn.style.cssText = 'width:48px;height:68px;background:#1a1d22';
+        btn.title = `${img.set_name || img.set_code || ''} ${img.collector_number || ''}`.trim();
+        if (thumb) { btn.innerHTML = `<img src="${thumb}" loading="lazy" class="w-full h-full object-cover" />`; }
+        btn.addEventListener('click', () => {
+          const full = img.image_uris?.normal || img.image_uris?.large || '';
+          if (full) { document.getElementById('detail-img').style.display = ''; document.getElementById('detail-img').src = full; }
+        });
+        container.appendChild(btn);
+      });
+      document.getElementById('detail-printings-wrap').classList.remove('hidden');
+    }
+
+  } catch (err) {
+    console.error('Detail panel error:', err);
+    document.getElementById('detail-title').textContent = 'Error loading';
+  }
+}
+
+// Add to deck from detail panel
+document.getElementById('detail-add-deck').addEventListener('click', async () => {
+  const deckId = getDeckId();
+  if (!deckId || !detailOracleId) return;
+  try {
+    await window.libraryAPI.addCardToDeck({ deckId: parseInt(deckId, 10), oracleId: detailOracleId, board: currentAddBoard });
+    try { await window.libraryAPI.logActivity({ event: 'card_added', deckId: parseInt(deckId, 10), oracleId: detailOracleId }); } catch {}
+    if (currentAddBoard === 'main' && !document.getElementById('workshop-view').classList.contains('hidden')) {
+      try {
+        const card = await window.cardsAPI.getCard({ oracleId: detailOracleId });
+        if (card) spawnCardOnCanvas(card);
+      } catch {}
+    }
+    loadDeck();
+    // Brief flash on button
+    const btn = document.getElementById('detail-add-deck');
+    btn.textContent = '✓ Added';
+    setTimeout(() => { btn.innerHTML = '<span class="material-symbols-outlined text-[14px]">add</span>Add to Deck'; }, 1200);
+  } catch (err) { console.error('Add to deck from detail failed:', err); }
+});
+
+// Set as cover from detail panel
+document.getElementById('detail-set-cover').addEventListener('click', async () => {
+  const deckId = getDeckId();
+  if (!deckId || !detailImgUrl) return;
+  try {
+    await window.libraryAPI.updateDeck({
+      id: parseInt(deckId, 10),
+      cover_scryfall_id: detailScryfallId,
+      cover_image_url: detailImgUrl,
+    });
+    const btn = document.getElementById('detail-set-cover');
+    btn.innerHTML = '<span class="material-symbols-outlined text-[16px] text-green-400">check</span>';
+    setTimeout(() => { btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">image</span>'; }, 1500);
+  } catch (err) { console.error('Set cover failed:', err); }
+});
+
+// Add to wishlist from detail panel
+document.getElementById('detail-add-wishlist').addEventListener('click', async () => {
+  if (!detailOracleId) return;
+  try {
+    await window.libraryAPI.addToWishlist({ oracleId: detailOracleId });
+    const btn = document.getElementById('detail-add-wishlist');
+    btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">bookmark</span>';
+    setTimeout(() => { btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">bookmark_add</span>'; }, 1500);
+  } catch (err) { console.error('Add to wishlist failed:', err); }
+});
+
+// Click detection on canvas cards
+function makeCardClickable(el) {
+  let pressX, pressY;
+  el.addEventListener('mousedown', e => { pressX = e.clientX; pressY = e.clientY; }, { capture: false });
+  el.addEventListener('mouseup', e => {
+    if (Math.hypot(e.clientX - pressX, e.clientY - pressY) < 8 && el.dataset.oracleId) {
+      openCardDetail(el.dataset.oracleId);
+    }
+  }, { capture: false });
+}
+
+// ── Color Filters ─────────────────────────────────────────────────────────────
+const activeColors = new Set();
+document.querySelectorAll('.color-filter-btn').forEach(btn => {
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const c = btn.dataset.color;
+    if (activeColors.has(c)) {
+      activeColors.delete(c);
+      btn.style.borderColor = 'transparent';
+      btn.style.opacity = '1';
+    } else {
+      activeColors.add(c);
+      btn.style.borderColor = 'white';
+      btn.style.opacity = '1';
+    }
+    // Re-run search with current query
+    const q = searchInput.value.trim();
+    if (q) runSearch(q);
+  });
+});
+
+function applyColorFilter(cards) {
+  if (!activeColors.size) return cards;
+  return cards.filter(c => {
+    let ci;
+    try { ci = typeof c.color_identity === 'string' ? JSON.parse(c.color_identity) : (c.color_identity || []); } catch { ci = []; }
+    // Colorless: show if C is selected and card has no color identity
+    if (activeColors.has('C') && (!ci || ci.length === 0)) return true;
+    return ci.some(color => activeColors.has(color.toUpperCase()));
+  });
+}
+
+// ── Deck Settings ─────────────────────────────────────────────────────────────
+let currentDeckData = null;
+
+function openDeckSettings() {
+  if (!currentDeckData) return;
+  document.getElementById('settings-name').value = currentDeckData.name || '';
+  document.getElementById('settings-format').value = currentDeckData.format || 'commander';
+  const pl = currentDeckData.power_level || 5;
+  document.getElementById('settings-power').value = pl;
+  document.getElementById('settings-power-display').textContent = pl;
+  document.getElementById('settings-favorite').checked = !!currentDeckData.is_favorite;
+  // Reset color identity buttons
+  const ci = (currentDeckData.color_identity || '').toUpperCase();
+  document.querySelectorAll('.color-identity-btn').forEach(btn => {
+    const active = ci.includes(btn.dataset.color);
+    btn.style.borderColor = active ? 'white' : 'transparent';
+    btn.style.opacity = active ? '1' : '0.5';
+  });
+  document.getElementById('deck-settings-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('settings-name').focus(), 50);
+}
+
+function closeDeckSettings() {
+  document.getElementById('deck-settings-modal').classList.add('hidden');
+}
+
+document.querySelectorAll('.color-identity-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const active = btn.style.borderColor === 'white';
+    btn.style.borderColor = active ? 'transparent' : 'white';
+    btn.style.opacity = active ? '0.5' : '1';
+  });
+});
+
+async function saveDeckSettings() {
+  const deckId = getDeckId();
+  if (!deckId) return;
+  const name = document.getElementById('settings-name').value.trim();
+  const format = document.getElementById('settings-format').value;
+  const power_level = parseInt(document.getElementById('settings-power').value, 10);
+  const is_favorite = document.getElementById('settings-favorite').checked ? 1 : 0;
+  const color_identity = Array.from(document.querySelectorAll('.color-identity-btn'))
+    .filter(btn => btn.style.borderColor === 'white')
+    .map(btn => btn.dataset.color)
+    .join('');
+  if (!name) { document.getElementById('settings-name').focus(); return; }
+  try {
+    await window.libraryAPI.updateDeck({ id: parseInt(deckId, 10), name, format, power_level, is_favorite, color_identity });
+    closeDeckSettings();
+    loadDeck(); // refresh subheader
+  } catch (err) { console.error('Save deck settings failed:', err); }
+}
+
+// ── Export Deck ────────────────────────────────────────────────────────────────
+async function exportDeck() {
+  const deckId = getDeckId();
+  if (!deckId) return;
+  try {
+    const deck = await window.libraryAPI.getDeck({ id: parseInt(deckId, 10) });
+    if (!deck || !deck.cards || !deck.cards.length) {
+      alert('No cards in deck to export.');
+      return;
+    }
+    const oracleIds = [...new Set(deck.cards.map(c => c.oracle_id).filter(Boolean))];
+    const cardDetails = {};
+    if (oracleIds.length) {
+      try {
+        const cards = await window.cardsAPI.getCardsBatch({ oracleIds });
+        cards.forEach(c => { cardDetails[c.oracle_id] = c; });
+      } catch {}
+    }
+    const FORMAT_LABELS_LOCAL = { commander:'Commander', modern:'Modern', standard:'Standard', pioneer:'Pioneer', legacy:'Legacy', pauper:'Pauper' };
+    let lines = [`// ${deck.name} — ${FORMAT_LABELS_LOCAL[deck.format] || deck.format}`, ''];
+    const commanders = deck.cards.filter(c => c.board === 'commander');
+    const main = deck.cards.filter(c => c.board !== 'commander');
+    if (commanders.length) {
+      lines.push('// Commander');
+      commanders.forEach(c => lines.push(`1 ${cardDetails[c.oracle_id]?.name || c.oracle_id}`));
+      lines.push('');
+    }
+    const exportGroups = {};
+    for (const c of main) {
+      const detail = cardDetails[c.oracle_id];
+      const cat = getCategory(detail?.type_line || '');
+      if (!exportGroups[cat]) exportGroups[cat] = [];
+      exportGroups[cat].push(c);
+    }
+    for (const cat of CATEGORY_ORDER) {
+      if (!exportGroups[cat]?.length) continue;
+      lines.push(`// ${cat}`);
+      exportGroups[cat].forEach(c => lines.push(`${c.quantity || 1} ${cardDetails[c.oracle_id]?.name || c.oracle_id}`));
+      lines.push('');
+    }
+    await navigator.clipboard.writeText(lines.join('\n'));
+    const btn = document.getElementById('deck-export-btn');
+    btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">check</span>';
+    setTimeout(() => { btn.innerHTML = '<span class="material-symbols-outlined text-[16px]">file_download</span>'; }, 2000);
+  } catch (err) { console.error('Export failed:', err); }
+}
+
+// ── Toggle Commander ──────────────────────────────────────────────────────────
+async function toggleCommander(deckCardId, currentBoard) {
+  const newBoard = currentBoard === 'commander' ? 'main' : 'commander';
+  try {
+    await window.libraryAPI.updateCardBoard({ id: deckCardId, board: newBoard });
+    loadListView();
+    loadDeck();
+  } catch (err) { console.error('Toggle commander failed:', err); }
+}
+
+// ── Toggle Sideboard ──────────────────────────────────────────────────────────
+async function toggleSideboard(deckCardId, currentBoard) {
+  const newBoard = currentBoard === 'sideboard' ? 'main' : 'sideboard';
+  try {
+    await window.libraryAPI.updateCardBoard({ id: deckCardId, board: newBoard });
+    loadListView();
+    loadDeck();
+  } catch (err) { console.error('Toggle sideboard failed:', err); }
+}
+
+// ── Board selector (search panel) ────────────────────────────────────────────
+let currentAddBoard = 'main';
+function setAddBoard(board) {
+  currentAddBoard = board;
+  const activeClass = board === 'sideboard'
+    ? 'px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 transition-all'
+    : 'px-2 py-0.5 rounded text-[10px] font-bold bg-primary/20 text-primary border border-primary/30 transition-all';
+  const inactiveClass = 'px-2 py-0.5 rounded text-[10px] font-medium text-on-surface-variant/50 hover:bg-white/5 transition-all';
+  document.getElementById('board-main-btn').className  = board === 'main'      ? activeClass.replace('blue-500/20','primary/20').replace('blue-400','primary').replace('blue-500/30','primary/30') : inactiveClass;
+  document.getElementById('board-side-btn').className  = board === 'sideboard' ? activeClass : inactiveClass;
+}
+
+// ── Sidebar folder management ────────────────────────────────────────────────
+function openSidebarNewFolderModal() {
+  document.getElementById('sidebar-new-folder-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('sidebar-new-folder-name').focus(), 50);
+}
+function closeSidebarNewFolderModal() {
+  document.getElementById('sidebar-new-folder-modal').classList.add('hidden');
+  document.getElementById('sidebar-new-folder-name').value = '';
+}
+async function submitSidebarNewFolder() {
+  const name = document.getElementById('sidebar-new-folder-name').value.trim();
+  if (!name) { document.getElementById('sidebar-new-folder-name').focus(); return; }
+  await window.libraryAPI.createFolder({ name });
+  closeSidebarNewFolderModal();
+  loadSidebar();
+}
+async function renameSidebarFolder(id, currentName) {
+  const newName = prompt('Rename folder:', currentName);
+  if (!newName || newName === currentName) return;
+  await window.libraryAPI.renameFolder({ id, name: newName });
+  loadSidebar();
+}
+async function deleteSidebarFolder(id) {
+  if (!confirm('Delete this folder? Decks inside will be unassigned.')) return;
+  await window.libraryAPI.deleteFolder({ id });
+  loadSidebar();
+}
+document.getElementById('sidebar-new-folder-name')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitSidebarNewFolder();
+  if (e.key === 'Escape') closeSidebarNewFolderModal();
+});
+
+// ── New Deck modal (sidebar) ──────────────────────────────────────────────────
+function openNewDeckModal() {
+  document.getElementById('new-deck-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('new-deck-name').focus(), 50);
+}
+function closeNewDeckModal() {
+  document.getElementById('new-deck-modal').classList.add('hidden');
+  document.getElementById('new-deck-name').value = '';
+}
+async function submitNewDeck() {
+  const name = document.getElementById('new-deck-name').value.trim();
+  if (!name) { document.getElementById('new-deck-name').focus(); return; }
+  const format = document.getElementById('new-deck-format').value;
+  try {
+    const { id } = await window.libraryAPI.createDeck({ name, format });
+    window.location.href = `./deckview.html?id=${id}`;
+  } catch (err) { console.error('Create deck failed:', err); }
+}
+document.getElementById('new-deck-name')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitNewDeck();
+  if (e.key === 'Escape') closeNewDeckModal();
+});
+
+// ── Add Sticker ───────────────────────────────────────────────────────────────
+function makeStickerEl(text) {
+  const el = document.createElement('div');
+  el.className = 'sticker canvas-item';
+  el.dataset.baseZ = '30';
+  el.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-[9px] font-bold uppercase tracking-widest text-primary/60 select-none">Note</span>
+      <button onclick="this.closest('.sticker').remove();scheduleAutoSave();"
+              class="text-on-surface-variant/40 hover:text-on-surface-variant transition-colors leading-none">
+        <span class="material-symbols-outlined text-[14px]">close</span>
+      </button>
+    </div>
+    <textarea rows="3" placeholder="Add a note…"
+      class="w-full bg-transparent resize-none outline-none text-on-surface/80 placeholder:text-on-surface-variant/30 text-[12px] leading-relaxed">${text ? esc(text) : ''}</textarea>`;
+  return el;
+}
+
+document.getElementById('btn-add-sticker').addEventListener('click', e => {
+  e.stopPropagation();
+  const r  = wv.getBoundingClientRect();
+  const cp = s2c(r.left + r.width/2, r.top + r.height/2);
+  const el = makeStickerEl('');
+  el.style.left = (cp.x - 90) + 'px';
+  el.style.top  = (cp.y - 60) + 'px';
+  cv.appendChild(el);
+  draggable(el, 'sticker');
+  el.querySelector('textarea').focus();
+  scheduleAutoSave();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+cv.ondragstart = () => false;
+
+// ── Group context menu ────────────────────────────────────────────────────────
+let menuTarget = null; // the group element currently referenced by the menu
+
+function openGroupMenu(btn, groupEl) {
+  const menu = document.getElementById('group-menu');
+
+  // Toggle off if already open for this group
+  if (menuTarget === groupEl && !menu.classList.contains('hidden')) {
+    menu.classList.add('hidden');
+    menuTarget = null;
+    return;
+  }
+
+  menuTarget = groupEl;
+
+  // Highlight the swatch matching the current group color
+  const dot = groupEl.querySelector('.w-3.h-3.rounded-full');
+  const currentColor = dot ? dot.style.background.replace(/\s/g,'') : '';
+  menu.querySelectorAll('.menu-color-swatch').forEach(sw => {
+    const match = sw.style.background.replace(/\s/g,'') === currentColor;
+    sw.style.outline      = match ? '2px solid rgba(255,255,255,0.7)' : 'none';
+    sw.style.outlineOffset = '2px';
+  });
+
+  // Position relative to #workshop-view
+  const br  = btn.getBoundingClientRect();
+  const wvr = wv.getBoundingClientRect();
+  let left = br.right  - wvr.left + 6;
+  let top  = br.top    - wvr.top;
+
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+  menu.classList.remove('hidden');
+
+  // Flip left if off-screen
+  requestAnimationFrame(() => {
+    const mr = menu.getBoundingClientRect();
+    if (mr.right > window.innerWidth - 8) {
+      menu.style.left = (br.left - wvr.left - mr.width - 6) + 'px';
+    }
+    if (mr.bottom > window.innerHeight - 8) {
+      menu.style.top = (br.bottom - wvr.top - mr.height) + 'px';
+    }
+  });
+}
+
+function menuRename() {
+  const menu = document.getElementById('group-menu');
+  menu.classList.add('hidden');
+  const g = menuTarget; menuTarget = null;
+  if (!g) return;
+
+  const h3    = g.querySelector('h3');
+  const badge = h3.querySelector('span');
+  const color = h3.style.color || window.getComputedStyle(h3).color;
+  const name  = (h3.firstChild?.textContent || h3.textContent).trim().replace(/\s*\(.*\)\s*$/, '');
+
+  const input = document.createElement('input');
+  input.value     = name;
+  input.className = 'bg-transparent border-b border-primary/60 outline-none font-bold uppercase tracking-widest text-[11px] w-28';
+  input.style.color = h3.style.color;
+
+  h3.textContent = '';
+  h3.appendChild(input);
+  if (badge) h3.appendChild(badge);
+  input.focus(); input.select();
+
+  function commit() {
+    const newName = input.value.trim() || name;
+    h3.childNodes[0]?.nodeType === Node.TEXT_NODE
+      ? (h3.childNodes[0].textContent = newName + ' ')
+      : h3.insertBefore(document.createTextNode(newName + ' '), h3.firstChild);
+    input.replaceWith(document.createTextNode(newName + ' '));
+    g.dataset.name = newName;
+    scheduleAutoSave();
+  }
+  input.addEventListener('blur', commit, { once: true });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = name; input.blur(); }
+  });
+}
+
+function menuChangeColor(color) {
+  const g = menuTarget; if (!g) return;
+  const h3  = g.querySelector('h3');
+  const dot = g.querySelector('.w-3.h-3.rounded-full');
+  h3.style.color           = color;
+  g.style.borderColor      = color + '55';
+  if (dot) { dot.style.background = color; dot.style.boxShadow = `0 0 8px ${color}55`; }
+  // Update swatch highlights
+  document.getElementById('group-menu').querySelectorAll('.menu-color-swatch').forEach(sw => {
+    const match = sw.style.background.replace(/\s/g,'') === color.replace(/\s/g,'');
+    sw.style.outline      = match ? '2px solid rgba(255,255,255,0.7)' : 'none';
+    sw.style.outlineOffset = '2px';
+  });
+  if (g.dataset) g.dataset.color = color;
+  scheduleAutoSave();
+}
+
+function menuDelete() {
+  const g = menuTarget;
+  document.getElementById('group-menu').classList.add('hidden');
+  menuTarget = null;
+  if (g) g.remove();
+  scheduleAutoSave();
+}
+
+// Close menu on outside click
+document.addEventListener('click', e => {
+  const menu = document.getElementById('group-menu');
+  if (!menu.classList.contains('hidden') && !menu.contains(e.target)) {
+    menu.classList.add('hidden');
+    menuTarget = null;
+  }
+}, true);
+
+// ── Canvas persistence ────────────────────────────────────────────────────────
+function serializeCanvas() {
+  const state = { tx, ty, sc, groups: [], freeCards: [], stickers: [] };
+
+  cv.querySelectorAll(':scope > .group-container').forEach(g => {
+    const cards = [];
+    g.querySelectorAll('.card-stack').forEach(c => {
+      if (c.dataset.cardJson) { try { cards.push(JSON.parse(c.dataset.cardJson)); } catch {} }
+    });
+    state.groups.push({
+      left: parseFloat(g.style.left) || 0,
+      top: parseFloat(g.style.top) || 0,
+      name: g.dataset.name || '',
+      color: g.dataset.color || '#f2ca83',
+      cards,
+    });
+  });
+
+  cv.querySelectorAll(':scope > .card-stack').forEach(c => {
+    if (!c.dataset.cardJson) return;
+    try {
+      const data = JSON.parse(c.dataset.cardJson);
+      state.freeCards.push({ ...data, left: parseFloat(c.style.left) || 0, top: parseFloat(c.style.top) || 0 });
+    } catch {}
+  });
+
+  cv.querySelectorAll(':scope > .sticker').forEach(s => {
+    state.stickers.push({
+      left: parseFloat(s.style.left) || 0,
+      top: parseFloat(s.style.top) || 0,
+      text: s.querySelector('textarea')?.value || '',
+    });
+  });
+
+  return state;
+}
+
+function restoreCanvas(state) {
+  Array.from(cv.children).forEach(el => { if (el.id !== 'sel-box') el.remove(); });
+  tx = state.tx ?? 80; ty = state.ty ?? 60; sc = state.sc ?? 1;
+  applyT();
+
+  for (const g of state.groups || []) {
+    const el = makeGroupEl(g.name, g.color);
+    el.style.cssText = `left:${g.left}px;top:${g.top}px;z-index:10;border-color:${g.color}55;`;
+    const cardList = el.querySelector('.card-list');
+    for (const c of g.cards || []) {
+      const cardEl = makeCardEl(c);
+      cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
+      cardEl.classList.remove('canvas-item');
+      cardEl.querySelectorAll('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
+      cardList.appendChild(cardEl);
+      cardEl.addEventListener('mousedown', function onDown(e) {
+        if (e.target.closest('button, a')) return;
+        cardEl.removeEventListener('mousedown', onDown);
+        ejectCard(cardEl, e);
+      });
+      makeCardClickable(cardEl);
+    }
+    cv.appendChild(el);
+    draggable(el, 'group');
+  }
+
+  for (const c of state.freeCards || []) {
+    const el = makeCardEl(c);
+    el.style.cssText = `position:absolute;left:${c.left}px;top:${c.top}px;z-index:20;cursor:grab;`;
+    el.querySelectorAll('.card-layer-1,.card-layer-2').forEach(l => l.style.display = 'none');
+    cv.appendChild(el);
+    draggable(el, 'card');
+    makeCardClickable(el);
+  }
+
+  for (const s of state.stickers || []) {
+    const el = makeStickerEl(s.text || '');
+    el.style.left = s.left + 'px'; el.style.top = s.top + 'px';
+    cv.appendChild(el);
+    draggable(el, 'sticker');
+  }
+}
+
+let autoSaveTimer = null;
+function scheduleAutoSave() {
+  clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(async () => {
+    if (!currentArrangementId) return;
+    try {
+      const state = serializeCanvas();
+      await window.libraryAPI.saveArrangementCanvas({ id: currentArrangementId, canvasJson: JSON.stringify(state) });
+    } catch (err) { console.error('Auto-save failed:', err); }
+  }, 1500);
+}
+
+// ── Arrangements ──────────────────────────────────────────────────────────────
+let currentArrangementId = null;
+let arrangements = [];
+
+async function loadArrangements() {
+  const deckId = getDeckId();
+  if (!deckId) return;
+  try {
+    arrangements = await window.libraryAPI.getArrangements({ deckId: parseInt(deckId, 10) });
+
+    if (!arrangements.length) {
+      const result = await window.libraryAPI.createArrangement({ deckId: parseInt(deckId, 10), name: 'Default' });
+      const newArr = { id: result.id, name: 'Default', canvas_json: null };
+      // Migrate old canvas_states data if present
+      try {
+        const old = await window.libraryAPI.loadCanvas({ deckId: parseInt(deckId, 10) });
+        if (old && old.stateJson) {
+          await window.libraryAPI.saveArrangementCanvas({ id: result.id, canvasJson: old.stateJson });
+          newArr.canvas_json = old.stateJson;
+        }
+      } catch {}
+      arrangements = [newArr];
+    }
+
+    renderArrangementTabs();
+    if (!currentArrangementId || !arrangements.find(a => a.id === currentArrangementId)) {
+      await switchArrangement(arrangements[0].id, false);
+    }
+  } catch (err) { console.error('Load arrangements failed:', err); }
+}
+
+function renderArrangementTabs() {
+  const container = document.getElementById('arrangement-tabs');
+  container.innerHTML = '';
+  for (const arr of arrangements) {
+    const isActive = arr.id === currentArrangementId;
+    const tab = document.createElement('div');
+    tab.className = `arrangement-tab flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] cursor-pointer transition-all select-none flex-shrink-0 ${isActive ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant/60 hover:bg-white/5 hover:text-on-surface-variant font-medium'}`;
+    tab.dataset.arrangementId = arr.id;
+    tab.innerHTML = `<span class="tab-name">${esc(arr.name)}</span>`;
+    if (arrangements.length > 1) {
+      tab.innerHTML += `<button class="tab-delete w-3.5 h-3.5 rounded flex items-center justify-center hover:bg-white/15 transition-all flex-shrink-0 ml-0.5 opacity-50 hover:opacity-100"><span class="material-symbols-outlined text-[10px]">close</span></button>`;
+    }
+
+    tab.addEventListener('click', e => {
+      if (e.target.closest('.tab-delete')) return;
+      if (arr.id !== currentArrangementId) switchArrangement(arr.id, true);
+    });
+
+    tab.querySelector('.tab-name').addEventListener('dblclick', e => {
+      e.stopPropagation();
+      startRenameArrangement(tab, arr);
+    });
+
+    const del = tab.querySelector('.tab-delete');
+    if (del) del.addEventListener('click', e => { e.stopPropagation(); deleteArrangementById(arr.id); });
+
+    container.appendChild(tab);
+  }
+}
+
+async function switchArrangement(arrangementId, saveFirst) {
+  if (saveFirst && currentArrangementId) {
+    try {
+      const state = serializeCanvas();
+      await window.libraryAPI.saveArrangementCanvas({ id: currentArrangementId, canvasJson: JSON.stringify(state) });
+      const cur = arrangements.find(a => a.id === currentArrangementId);
+      if (cur) cur.canvas_json = JSON.stringify(state);
+    } catch {}
+  }
+  currentArrangementId = arrangementId;
+  renderArrangementTabs();
+
+  const arr = arrangements.find(a => a.id === arrangementId);
+  const json = arr?.canvas_json || null;
+  if (json) {
+    try { restoreCanvas(JSON.parse(json)); } catch { clearCanvasView(); }
+  } else {
+    clearCanvasView();
+  }
+}
+
+function clearCanvasView() {
+  Array.from(cv.children).forEach(el => { if (el.id !== 'sel-box') el.remove(); });
+  tx = 80; ty = 60; sc = 1; applyT();
+}
+
+document.getElementById('btn-new-arrangement').addEventListener('click', async e => {
+  e.stopPropagation();
+  const deckId = getDeckId();
+  if (!deckId) return;
+  if (currentArrangementId) {
+    try {
+      const state = serializeCanvas();
+      await window.libraryAPI.saveArrangementCanvas({ id: currentArrangementId, canvasJson: JSON.stringify(state) });
+      const cur = arrangements.find(a => a.id === currentArrangementId);
+      if (cur) cur.canvas_json = JSON.stringify(state);
+    } catch {}
+  }
+  const name = `Arrangement ${arrangements.length + 1}`;
+  try {
+    const result = await window.libraryAPI.createArrangement({ deckId: parseInt(deckId, 10), name });
+    arrangements.push({ id: result.id, name, canvas_json: null });
+    await switchArrangement(result.id, false);
+  } catch (err) { console.error('Create arrangement failed:', err); }
+});
+
+function startRenameArrangement(tabEl, arr) {
+  const nameSpan = tabEl.querySelector('.tab-name');
+  const original = arr.name;
+  const input = document.createElement('input');
+  input.value = original;
+  input.className = 'bg-transparent border-b border-primary/60 outline-none text-[11px] font-bold text-primary w-20 max-w-[120px]';
+  nameSpan.replaceWith(input);
+  input.focus(); input.select();
+  async function commit() {
+    const newName = input.value.trim() || original;
+    arr.name = newName;
+    const span = document.createElement('span');
+    span.className = 'tab-name';
+    span.textContent = newName;
+    span.addEventListener('dblclick', e => { e.stopPropagation(); startRenameArrangement(tabEl, arr); });
+    input.replaceWith(span);
+    try { await window.libraryAPI.renameArrangement({ id: arr.id, name: newName }); } catch {}
+  }
+  input.addEventListener('blur', commit, { once: true });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = original; input.blur(); }
+  });
+}
+
+async function deleteArrangementById(arrangementId) {
+  if (arrangements.length <= 1) return;
+  try {
+    await window.libraryAPI.deleteArrangement({ id: arrangementId });
+    const idx = arrangements.findIndex(a => a.id === arrangementId);
+    arrangements.splice(idx, 1);
+    if (currentArrangementId === arrangementId) {
+      currentArrangementId = null;
+      await switchArrangement(arrangements[0].id, false);
+    } else {
+      renderArrangementTabs();
+    }
+  } catch (err) { console.error('Delete arrangement failed:', err); }
+}
+
+async function loadCanvas() {
+  await loadArrangements();
+}
+
+// ── List view ─────────────────────────────────────────────────────────────────
+const CATEGORY_ORDER = ['Commanders','Creatures','Instants','Sorceries','Enchantments','Artifacts','Planeswalkers','Lands','Other','Sideboard'];
+
+function getCategory(typeLine) {
+  const t = (typeLine || '').toLowerCase();
+  if (t.includes('creature')) return 'Creatures';
+  if (t.includes('instant')) return 'Instants';
+  if (t.includes('sorcery')) return 'Sorceries';
+  if (t.includes('enchantment')) return 'Enchantments';
+  if (t.includes('artifact')) return 'Artifacts';
+  if (t.includes('planeswalker')) return 'Planeswalkers';
+  if (t.includes('land')) return 'Lands';
+  return 'Other';
+}
+
+async function loadListView() {
+  const deckId = getDeckId();
+  if (!deckId) return;
+  const content = document.getElementById('list-content');
+  content.innerHTML = `<div class="flex items-center justify-center h-32 gap-2 text-on-surface-variant/30"><span class="material-symbols-outlined">hourglass_empty</span><span>Loading…</span></div>`;
+
+  try {
+    const deck = await window.libraryAPI.getDeck({ id: parseInt(deckId, 10) });
+    if (!deck || !deck.cards || !deck.cards.length) {
+      content.innerHTML = `<div class="flex flex-col items-center justify-center h-48 gap-3 text-center"><span class="material-symbols-outlined text-[48px] text-on-surface-variant/15">style</span><p class="text-on-surface-variant/40">No cards yet — switch to Workshop and add cards</p></div>`;
+      return;
+    }
+
+    const oracleIds = [...new Set(deck.cards.map(c => c.oracle_id).filter(Boolean))];
+    const cardDetails = {};
+    if (oracleIds.length) {
+      try {
+        const cards = await window.cardsAPI.getCardsBatch({ oracleIds });
+        cards.forEach(c => { cardDetails[c.oracle_id] = c; });
+      } catch {}
+    }
+
+    const groups = {};
+    for (const dc of deck.cards) {
+      const detail = cardDetails[dc.oracle_id] || null;
+      const cat = dc.board === 'commander' ? 'Commanders'
+                : dc.board === 'sideboard'  ? 'Sideboard'
+                : getCategory(detail?.type_line || '');
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push({ dc, detail });
+    }
+
+    let html = '';
+    for (const cat of CATEGORY_ORDER) {
+      const items = groups[cat];
+      if (!items || !items.length) continue;
+      html += `<div class="mb-8"><div class="flex items-center gap-3 mb-3 pb-2 border-b border-white/5"><h3 class="font-label-sm text-[10px] font-bold text-on-surface-variant/50 uppercase tracking-widest">${cat}</h3><span class="text-[10px] text-on-surface-variant/30">${items.length}</span></div><div class="space-y-0.5">`;
+      for (const { dc, detail } of items) {
+        const name = detail?.name || dc.oracle_id;
+        const typeLine = detail?.type_line || '';
+        const manaCost = detail?.mana_cost || '';
+        const qty = dc.quantity || 1;
+        html += `<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/3 group">
+          <div class="flex items-center gap-1 flex-shrink-0">
+            <button onclick="updateCardQty(${dc.id},${qty - 1},'${dc.oracle_id}')" class="w-5 h-5 rounded text-on-surface-variant/40 hover:text-on-surface hover:bg-white/10 flex items-center justify-center transition-all text-sm leading-none">−</button>
+            <span class="text-label-md font-bold text-primary w-5 text-center">${qty}</span>
+            <button onclick="updateCardQty(${dc.id},${qty + 1})" class="w-5 h-5 rounded text-on-surface-variant/40 hover:text-on-surface hover:bg-white/10 flex items-center justify-center transition-all text-sm leading-none">+</button>
+          </div>
+          <span class="flex-1 text-body-md text-on-surface font-medium truncate">${esc(name)}</span>
+          <span class="text-[10px] text-on-surface-variant/35 truncate w-40 hidden md:block">${esc(typeLine)}</span>
+          <div class="flex gap-0.5 items-center w-14 justify-end flex-shrink-0">${pipHtml(manaCost)}</div>
+          <button onclick="toggleCommander(${dc.id}, '${dc.board}')" title="${dc.board === 'commander' ? 'Remove Commander' : 'Set as Commander'}"
+            class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-all flex-shrink-0 ${dc.board === 'commander' ? 'text-primary' : 'text-on-surface-variant/30 hover:text-primary'} hover:bg-primary/10">
+            <span class="material-symbols-outlined text-[14px]">crown</span>
+          </button>
+          <button onclick="toggleSideboard(${dc.id}, '${dc.board}')" title="${dc.board === 'sideboard' ? 'Move to Main' : 'Move to Sideboard'}"
+            class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center transition-all flex-shrink-0 ${dc.board === 'sideboard' ? 'text-blue-400' : 'text-on-surface-variant/30 hover:text-blue-400'} hover:bg-blue-500/10">
+            <span class="material-symbols-outlined text-[14px]">move_down</span>
+          </button>
+          <button onclick="removeCard(${dc.id}, '${dc.oracle_id}')" class="opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-red-400 hover:bg-red-500/10 transition-all flex-shrink-0"><span class="material-symbols-outlined text-[14px]">close</span></button>
+        </div>`;
+      }
+      html += `</div></div>`;
+    }
+
+    content.innerHTML = `<div class="flex items-center justify-between mb-6"><h2 class="font-headline-md text-lg text-on-surface">Deck List</h2><span class="text-label-sm text-on-surface-variant/40">${deck.cards.length} cards</span></div>${html}`;
+  } catch (err) {
+    console.error('List view failed:', err);
+    content.innerHTML = `<p class="text-red-400/60 p-8">Failed to load deck list.</p>`;
+  }
+}
+
+async function removeCard(deckCardId, oracleId) {
+  try {
+    await window.libraryAPI.removeCardFromDeck({ id: deckCardId });
+    try { await window.libraryAPI.logActivity({ event: 'card_removed', deckId: parseInt(getDeckId(), 10), oracleId }); } catch {}
+    if (oracleId) {
+      const canvasEl = cv.querySelector(`[data-oracle-id="${CSS.escape(oracleId)}"]`);
+      if (canvasEl) {
+        canvasEl.remove();
+        scheduleAutoSave();
+      }
+    }
+    loadListView();
+    loadDeck();
+  } catch (err) { console.error('Remove card failed:', err); }
+}
+
+async function updateCardQty(deckCardId, newQty, oracleId) {
+  if (newQty < 1) { removeCard(deckCardId, oracleId); return; }
+  try {
+    await window.libraryAPI.updateCardQuantity({ id: deckCardId, quantity: newQty });
+    loadListView();
+  } catch (err) { console.error('Update qty failed:', err); }
+}
+
+// ── Tab buttons ────────────────────────────────────────────────────────────────
+document.getElementById('tab-workshop').addEventListener('click', () => {
+  document.getElementById('workshop-view').classList.remove('hidden');
+  document.getElementById('list-view').classList.add('hidden');
+  document.getElementById('arrangement-bar').classList.remove('hidden');
+  document.getElementById('tab-workshop').classList.add('bg-surface-container-high', 'text-primary', 'font-bold');
+  document.getElementById('tab-workshop').classList.remove('text-on-surface-variant', 'font-medium');
+  document.getElementById('tab-list').classList.remove('bg-surface-container-high', 'text-primary', 'font-bold');
+  document.getElementById('tab-list').classList.add('text-on-surface-variant', 'font-medium');
+});
+
+document.getElementById('tab-list').addEventListener('click', () => {
+  document.getElementById('workshop-view').classList.add('hidden');
+  document.getElementById('list-view').classList.remove('hidden');
+  document.getElementById('arrangement-bar').classList.add('hidden');
+  document.getElementById('tab-list').classList.add('bg-surface-container-high', 'text-primary', 'font-bold');
+  document.getElementById('tab-list').classList.remove('text-on-surface-variant', 'font-medium');
+  document.getElementById('tab-workshop').classList.remove('bg-surface-container-high', 'text-primary', 'font-bold');
+  document.getElementById('tab-workshop').classList.add('text-on-surface-variant', 'font-medium');
+  loadListView();
+});
+
+applyT();
+
+// ─── Data layer ─────────────────────────────────────────────────────────────
+
+const FORMAT_LABELS = {
+  commander:'Commander', modern:'Modern', standard:'Standard',
+  pioneer:'Pioneer', legacy:'Legacy', vintage:'Vintage', pauper:'Pauper',
+};
+const COLOR_META = {
+  W: '#f0d870', U: '#4a7cc9', B: '#5a5a5a', R: '#c0392b', G: '#27ae60',
+};
+
+function getDeckId() {
+  return new URLSearchParams(window.location.search).get('id');
+}
+
+async function loadDeck() {
+  const id = getDeckId();
+  if (!id) return;
+  try {
+    const deck = await window.libraryAPI.getDeck({ id: parseInt(id, 10) });
+    if (!deck) return;
+    currentDeckData = deck;
+
+    document.title = `KarnForge — ${deck.name}`;
+    document.getElementById('deck-title').textContent = deck.name;
+    document.getElementById('deck-format-badge').textContent =
+      FORMAT_LABELS[deck.format] || deck.format;
+    const cardCount = deck.cards ? deck.cards.reduce((s, c) => s + (c.quantity || 1), 0) : 0;
+    document.getElementById('deck-card-count').textContent = `${cardCount} cards`;
+
+    // Mana curve
+    const mainCards = (deck.cards || []).filter(c => c.board !== 'commander' && c.board !== 'sideboard');
+    if (mainCards.length) {
+      const oracleIds = [...new Set(mainCards.map(c => c.oracle_id).filter(Boolean))];
+      try {
+        const details = {};
+        (await window.cardsAPI.getCardsBatch({ oracleIds })).forEach(c => { details[c.oracle_id] = c; });
+        const buckets = [0, 0, 0, 0, 0];
+        for (const dc of mainCards) {
+          const cmc = Math.round(details[dc.oracle_id]?.cmc || 0);
+          const idx = Math.min(4, Math.max(0, cmc - 1));
+          if (cmc > 0) buckets[idx] += (dc.quantity || 1);
+        }
+        const peak = Math.max(...buckets, 1);
+        buckets.forEach((n, i) => {
+          const bar = document.getElementById(`curve-bar-${i + 1}`);
+          if (!bar) return;
+          const pct = Math.round(n / peak * 100);
+          bar.style.height = `${Math.max(pct, 4)}%`;
+          bar.className = bar.className.replace(/bg-primary\/\d+/, pct >= 80 ? 'bg-primary' : pct >= 40 ? 'bg-primary/70' : 'bg-primary/35');
+        });
+      } catch {}
+    }
+  } catch (err) {
+    console.error('Failed to load deck:', err);
+  }
+}
+
+async function loadSidebar() {
+  try {
+    const [tree, decks] = await Promise.all([
+      window.libraryAPI.getFolderTree(),
+      window.libraryAPI.getDecks(),
+    ]);
+    const currentId = getDeckId();
+    const decksByFolder = {};
+    for (const d of decks) {
+      const fid = d.folder_id ?? '__root__';
+      if (!decksByFolder[fid]) decksByFolder[fid] = [];
+      decksByFolder[fid].push(d);
+    }
+
+    function buildFolderNode(folder) {
+      const folderDecks = decksByFolder[folder.id] || [];
+      const hasChildren = folder.children.length > 0 || folderDecks.length > 0;
+      const details = document.createElement('details');
+      details.open = true;
+      const summary = document.createElement('summary');
+      summary.className = 'group flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer text-on-surface-variant/80 transition-colors';
+      summary.innerHTML = `
+        <span class="material-symbols-outlined disclosure-arrow mr-1 text-[16px]">chevron_right</span>
+        <span class="material-symbols-outlined mr-2 text-[16px]">${folder.icon || 'folder'}</span>
+        <span class="text-body-md flex-1">${folder.name}</span>
+        <button onclick="event.stopPropagation();renameSidebarFolder(${folder.id},'${folder.name.replace(/'/g, "\\'")}')" class="no-drag opacity-0 group-hover:opacity-100 w-4 h-4 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-on-surface-variant transition-all" title="Rename">
+          <span class="material-symbols-outlined text-[12px]">edit</span>
+        </button>
+        <button onclick="event.stopPropagation();deleteSidebarFolder(${folder.id})" class="no-drag opacity-0 group-hover:opacity-100 w-4 h-4 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-red-400 transition-all ml-0.5" title="Delete">
+          <span class="material-symbols-outlined text-[12px]">delete_outline</span>
+        </button>`;
+      details.appendChild(summary);
+      if (hasChildren) {
+        const inner = document.createElement('div');
+        inner.className = 'ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5';
+        folder.children.forEach(child => inner.appendChild(buildFolderNode(child)));
+        folderDecks.forEach(deck => {
+          const isActive = currentId && String(deck.id) === String(currentId);
+          const a = document.createElement('a');
+          a.className = `flex items-center px-3 py-1.5 rounded-md text-body-md transition-all ${isActive ? 'tree-item-active' : 'hover:bg-white/5 text-on-surface-variant/70'}`;
+          a.href = `./deckview.html?id=${deck.id}`;
+          a.innerHTML = `<span class="material-symbols-outlined mr-2 text-[16px]">style</span><span>${deck.name}</span>`;
+          inner.appendChild(a);
+        });
+        details.appendChild(inner);
+      }
+      return details;
+    }
+
+    const container = document.getElementById('folder-tree');
+    container.innerHTML = '';
+    const collectionsDetails = document.createElement('details');
+    collectionsDetails.open = true;
+    collectionsDetails.innerHTML = `
+      <summary class="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer text-on-surface-variant transition-colors">
+        <span class="material-symbols-outlined disclosure-arrow mr-1 text-[18px]">chevron_right</span>
+        <span class="material-symbols-outlined mr-2 text-[18px]">folder</span>
+        <span class="text-body-md flex-1">My Collections</span>
+        <button onclick="event.stopPropagation();openSidebarNewFolderModal()" class="no-drag w-5 h-5 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-primary hover:bg-white/10 transition-all flex-shrink-0">
+          <span class="material-symbols-outlined text-[14px]">add</span>
+        </button>
+      </summary>`;
+    const inner = document.createElement('div');
+    inner.className = 'ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5';
+    tree.forEach(f => inner.appendChild(buildFolderNode(f)));
+    collectionsDetails.appendChild(inner);
+    container.appendChild(collectionsDetails);
+  } catch (err) {
+    console.error('Failed to load sidebar:', err);
+  }
+}
+
+loadDeck();
+loadSidebar();
+loadCanvas();
+</script>
+</body>
+</html>

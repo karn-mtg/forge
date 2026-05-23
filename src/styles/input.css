@@ -1,0 +1,157 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* -webkit-app-region helpers for frameless window */
+.titlebar-drag  { -webkit-app-region: drag; }
+.no-drag        { -webkit-app-region: no-drag; }
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0D0D0D; }
+::-webkit-scrollbar-thumb { background: #2B2E33; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4e4639; }
+
+/* Glass sidebar shared across pages */
+.glass-sidebar {
+  background: rgba(26, 29, 34, 0.85);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+}
+
+/* Active sidebar tree item */
+.tree-item-active {
+  background: rgba(212, 175, 106, 0.15);
+  color: #f2ca83;
+}
+
+/* Sidebar disclosure arrows */
+details > summary            { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+.disclosure-arrow            { transition: transform 0.2s ease; }
+details[open] > summary .disclosure-arrow { transform: rotate(90deg); }
+
+/* Glass panel (deckview) */
+.glass-panel {
+  background: rgba(26, 29, 34, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(212, 175, 106, 0.1);
+}
+
+/* Group container (deckview) — border-color set inline per group */
+.group-container {
+  border: 1.5px dashed rgba(212, 175, 106, 0.25);
+  border-radius: 1rem;
+  background: rgba(20, 20, 20, 0.45);
+  padding: 1.5rem;
+  min-width: 420px;
+  position: absolute;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Canvas dot-grid (deckview) */
+.canvas-grid {
+  background-image: radial-gradient(circle, #2B2E33 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Stacked card effect (deckview) */
+.card-stack {
+  position: relative;
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.card-stack .card-layer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(78, 70, 57, 0.5);
+  background: #1c1b1b;
+  transition: transform 0.2s ease;
+}
+.card-stack:hover .card-layer-1 { transform: translate(4px, -4px); }
+.card-stack:hover .card-layer-2 { transform: translate(8px, -8px); }
+
+/* Mana pip */
+.mana-pip {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 2px;
+}
+
+/* Selection outline */
+.canvas-item.selected {
+  outline: 2px solid rgba(242, 202, 131, 0.8);
+  outline-offset: 5px;
+  border-radius: 6px;
+}
+
+/* Rubber-band selection box */
+#sel-box {
+  position: absolute;
+  display: none;
+  border: 1.5px dashed rgba(242, 202, 131, 0.7);
+  background: rgba(242, 202, 131, 0.04);
+  pointer-events: none;
+  z-index: 400;
+  border-radius: 3px;
+}
+
+/* Infinite canvas */
+#canvas {
+  transform-origin: 0 0;
+  will-change: transform;
+  position: relative;
+  width: 4000px;
+  height: 3000px;
+}
+
+/* Group highlighted when a card is dragged over */
+.group-drop-highlight {
+  filter: brightness(1.3) !important;
+  box-shadow: 0 0 30px rgba(242, 202, 131, 0.15) !important;
+}
+
+/* Free-floating card on canvas */
+.card-free {
+  position: absolute;
+  z-index: 20;
+  cursor: grab;
+}
+.card-free:active { cursor: grabbing; }
+
+/* Text sticker */
+.sticker {
+  position: absolute;
+  width: 180px;
+  background: rgba(26, 29, 34, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(242, 202, 131, 0.25);
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  cursor: grab;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 30;
+}
+.sticker:active { cursor: grabbing; }
+
+/* Traffic light buttons */
+.traffic-light {
+  width: 12px; height: 12px;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.1s ease;
+  flex-shrink: 0;
+}
+.traffic-light:hover { filter: brightness(1.25); }
+.traffic-light:active { transform: scale(0.88); }
+.traffic-light-close    { background: #FF5F56; }
+.traffic-light-minimize { background: #FFBD2E; }
+.traffic-light-maximize { background: #27C93F; }
