@@ -26,6 +26,7 @@ const {
   insertTokenImage,
   updateCardSets,
   updateMetadata,
+  rebuildFts,
   getMetadata,
 } = require('./cards');
 
@@ -104,17 +105,27 @@ function isMarkerCard(card) {
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const get = url.startsWith('https') ? https.get : http.get;
-    get(url, { headers: { 'User-Agent': 'KarnForge/1.0' } }, (res) => {
+    const headers = {
+      'User-Agent': 'KarnForge/1.0 (guilherme.albino.francisco@gmail.com)',
+      'Accept': 'application/json',
+    };
+    get(url, { headers }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302) {
         return resolve(fetchJson(res.headers.location));
-      }
-      if (res.statusCode !== 200) {
-        return reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
       }
       let raw = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => { raw += chunk; });
       res.on('end', () => {
+        if (res.statusCode !== 200) {
+          // Try to surface the Scryfall error body for easier debugging
+          let detail = '';
+          try {
+            const body = JSON.parse(raw);
+            if (body && body.details) detail = ` — ${body.details}`;
+          } catch { /* ignore */ }
+          return reject(new Error(`HTTP ${res.statusCode} fetching ${url}${detail}`));
+        }
         try {
           resolve(JSON.parse(raw));
         } catch (e) {
@@ -393,10 +404,13 @@ async function syncCards(db, { refresh = false, onProgress = () => {} } = {}) {
     // ------------------------------------------------------------------
     // Phase: indexing
     // ------------------------------------------------------------------
-    onProgress({ phase: 'indexing', current: 0, total: 0, message: 'Building set index…' });
+    onProgress({ phase: 'indexing', current: 0, total: 0, message: 'Building set & search index…' });
 
     updateCardSets(db);
     updateMetadata(db, { sourceUpdatedAt: scryfallUpdatedAt, fileSize, cardCount, tokenCount });
+
+    // Fix #1: rebuild FTS index after all cards are committed
+    rebuildFts(db);
 
     // Clean up temp file
     try { fs.unlinkSync(TEMP_FILE); } catch { /* ignore */ }

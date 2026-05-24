@@ -86,6 +86,13 @@ CREATE TABLE IF NOT EXISTS arrangements (
   sort_order INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+
+-- Fix #6: indexes missing from original schema
+CREATE INDEX IF NOT EXISTS idx_deck_cards_deck_id    ON deck_cards (deck_id);
+CREATE INDEX IF NOT EXISTS idx_arrangements_deck_id  ON arrangements (deck_id);
+CREATE INDEX IF NOT EXISTS idx_collection_oracle_id  ON collection (oracle_id);
+CREATE INDEX IF NOT EXISTS idx_wishlist_oracle_id    ON wishlist (oracle_id);
+CREATE INDEX IF NOT EXISTS idx_activity_log_deck_id  ON activity_log (deck_id);
 `;
 
 function initLibrary(userDataPath) {
@@ -140,12 +147,24 @@ function deleteFolder(db, { id }) {
 // ---------------------------------------------------------------------------
 
 function getDecks(db, { folderId = null } = {}) {
-  if (folderId === null || folderId === undefined) {
-    return db.prepare('SELECT *, (SELECT COALESCE(SUM(quantity),0) FROM deck_cards WHERE deck_id = decks.id) AS card_count FROM decks ORDER BY sort_order, name').all();
+  // Fix #5: replace correlated subquery with a single LEFT JOIN + GROUP BY
+  if (folderId == null) {
+    return db.prepare(`
+      SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count
+      FROM decks d
+      LEFT JOIN deck_cards dc ON dc.deck_id = d.id
+      GROUP BY d.id
+      ORDER BY d.sort_order, d.name
+    `).all();
   }
-  return db
-    .prepare('SELECT *, (SELECT COALESCE(SUM(quantity),0) FROM deck_cards WHERE deck_id = decks.id) AS card_count FROM decks WHERE folder_id = ? ORDER BY sort_order, name')
-    .all(folderId);
+  return db.prepare(`
+    SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count
+    FROM decks d
+    LEFT JOIN deck_cards dc ON dc.deck_id = d.id
+    WHERE d.folder_id = ?
+    GROUP BY d.id
+    ORDER BY d.sort_order, d.name
+  `).all(folderId);
 }
 
 function createDeck(db, { name, format = 'commander', folderId = null, colorIdentity = null }) {
@@ -195,22 +214,49 @@ function addCardToDeck(db, { deckId, oracleId, scryfallId = null, quantity = 1, 
       'INSERT INTO deck_cards (deck_id, oracle_id, scryfall_id, quantity, board, category) VALUES (?, ?, ?, ?, ?, ?)'
     )
     .run(deckId, oracleId, scryfallId, quantity, board, category);
+  db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(deckId);
   return { id: result.lastInsertRowid };
 }
 
 function removeCardFromDeck(db, { id }) {
+  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
   db.prepare('DELETE FROM deck_cards WHERE id = ?').run(id);
+  if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
 }
 
 function updateCardBoard(db, { id, board }) {
+  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
   db.prepare('UPDATE deck_cards SET board = ? WHERE id = ?').run(board, id);
+  if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
 }
 
 function updateCardQuantity(db, { id, quantity }) {
+  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
   db.prepare('UPDATE deck_cards SET quantity = ? WHERE id = ?').run(quantity, id);
+  if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
+}
+
+function moveDeck(db, { id, folderId }) {
+  db.prepare("UPDATE decks SET folder_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(folderId ?? null, id);
+  return { ok: true };
+}
+
+function duplicateDeck(db, { id }) {
+  const deck = db.prepare('SELECT * FROM decks WHERE id = ?').get(id);
+  if (!deck) return null;
+  const res = db.prepare(
+    "INSERT INTO decks (folder_id, name, format, description, color_identity, power_level) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(deck.folder_id, `${deck.name} (Copy)`, deck.format, deck.description, deck.color_identity, deck.power_level);
+  const newId = res.lastInsertRowid;
+  const cards = db.prepare('SELECT * FROM deck_cards WHERE deck_id = ?').all(id);
+  if (cards.length) {
+    const ins = db.prepare('INSERT INTO deck_cards (deck_id, oracle_id, scryfall_id, quantity, board, category) VALUES (?, ?, ?, ?, ?, ?)');
+    db.transaction(() => { for (const c of cards) ins.run(newId, c.oracle_id, c.scryfall_id, c.quantity, c.board, c.category); })();
+  }
+  return { id: newId };
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +281,12 @@ function removeFromCollection(db, { id }) {
   return { ok: true };
 }
 
+function updateCollectionEntry(db, { id, quantity, condition, foil, acquiredPrice }) {
+  db.prepare('UPDATE collection SET quantity = ?, condition = ?, foil = ?, acquired_price_usd = ? WHERE id = ?')
+    .run(quantity, condition, foil ? 1 : 0, acquiredPrice ?? null, id);
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------------------
 // Wishlist
 // ---------------------------------------------------------------------------
@@ -254,6 +306,11 @@ function addToWishlist(db, { oracleId, scryfallId = null, quantity = 1, priority
 
 function removeFromWishlist(db, { id }) {
   db.prepare('DELETE FROM wishlist WHERE id = ?').run(id);
+  return { ok: true };
+}
+
+function updateWishlistEntry(db, { id, quantity, priority, note }) {
+  db.prepare('UPDATE wishlist SET quantity = ?, priority = ?, notes = ? WHERE id = ?').run(quantity, priority, note ?? null, id);
   return { ok: true };
 }
 
@@ -340,6 +397,8 @@ module.exports = {
   getDeck,
   updateDeck,
   deleteDeck,
+  moveDeck,
+  duplicateDeck,
   addCardToDeck,
   removeCardFromDeck,
   updateCardBoard,
@@ -347,9 +406,11 @@ module.exports = {
   getCollection,
   addToCollection,
   removeFromCollection,
+  updateCollectionEntry,
   getWishlist,
   addToWishlist,
   removeFromWishlist,
+  updateWishlistEntry,
   logActivity,
   getActivityLog,
   saveCanvas,

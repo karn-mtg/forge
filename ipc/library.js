@@ -12,6 +12,8 @@ function registerLibraryHandlers(ipcMain, getDb) {
   ipcMain.handle('lib:getDeck',            (_e, args) => lib.getDeck(getDb(), args));
   ipcMain.handle('lib:updateDeck',         (_e, args) => lib.updateDeck(getDb(), args));
   ipcMain.handle('lib:deleteDeck',         (_e, args) => lib.deleteDeck(getDb(), args));
+  ipcMain.handle('lib:moveDeck',           (_e, args) => lib.moveDeck(getDb(), args));
+  ipcMain.handle('lib:duplicateDeck',      (_e, args) => lib.duplicateDeck(getDb(), args));
   ipcMain.handle('lib:addCardToDeck',      (_e, args) => lib.addCardToDeck(getDb(), args));
   ipcMain.handle('lib:removeCardFromDeck', (_e, args) => lib.removeCardFromDeck(getDb(), args));
   ipcMain.handle('lib:updateCardBoard',    (_e, args) => lib.updateCardBoard(getDb(), args));
@@ -19,9 +21,11 @@ function registerLibraryHandlers(ipcMain, getDb) {
   ipcMain.handle('lib:getCollection',      (_e, args) => lib.getCollection(getDb(), args));
   ipcMain.handle('lib:addToCollection',    (_e, args) => lib.addToCollection(getDb(), args));
   ipcMain.handle('lib:removeFromCollection', (_e, args) => lib.removeFromCollection(getDb(), args));
+  ipcMain.handle('lib:updateCollectionEntry', (_e, args) => lib.updateCollectionEntry(getDb(), args));
   ipcMain.handle('lib:getWishlist',        (_e, args) => lib.getWishlist(getDb(), args));
   ipcMain.handle('lib:addToWishlist',      (_e, args) => lib.addToWishlist(getDb(), args));
   ipcMain.handle('lib:removeFromWishlist', (_e, args) => lib.removeFromWishlist(getDb(), args));
+  ipcMain.handle('lib:updateWishlistEntry', (_e, args) => lib.updateWishlistEntry(getDb(), args));
   ipcMain.handle('lib:logActivity',             (_e, args) => lib.logActivity(getDb(), args));
   ipcMain.handle('lib:getActivityLog',          (_e, args) => lib.getActivityLog(getDb(), args));
   ipcMain.handle('lib:saveCanvas',              (_e, args) => lib.saveCanvas(getDb(), args));

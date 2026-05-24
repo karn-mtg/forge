@@ -105,13 +105,115 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_images_oracle_id ON card_images (oracle_id);
   CREATE INDEX IF NOT EXISTS idx_images_set_code  ON card_images (set_code);
   CREATE INDEX IF NOT EXISTS idx_tokens_name      ON tokens (name);
+
+  -- Fix #1: FTS5 virtual table for full-text search (content table — no duplicate storage)
+  CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
+    name,
+    type_line,
+    oracle_text,
+    content='cards',
+    content_rowid='rowid'
+  );
 `;
 
 function initCards(userDataPath) {
   const dbPath = path.join(userDataPath, 'cards.db');
   const db = new Database(dbPath);
   db.exec(SCHEMA);
+
+  // Fix #1: If cards exist but FTS index is empty (e.g. first run after upgrade),
+  // rebuild the FTS index so searches work immediately without a full re-sync.
+  try {
+    const cardCount = db.prepare('SELECT COUNT(*) AS n FROM cards').get().n;
+    const ftsCount  = db.prepare('SELECT COUNT(*) AS n FROM cards_fts').get().n;
+    if (cardCount > 0 && ftsCount === 0) {
+      db.exec(`INSERT INTO cards_fts(cards_fts) VALUES('rebuild')`);
+    }
+  } catch { /* FTS not critical on startup */ }
+
   return db;
+}
+
+// ---------------------------------------------------------------------------
+// Fix #8: Prepared-statement cache
+// better-sqlite3 prepare() compiles SQL on every call. During sync we call
+// insertCard/insertToken/insertCardImage/insertTokenImage ~30 000 times each,
+// so we compile once and reuse the same Statement object.
+// ---------------------------------------------------------------------------
+
+let _stmtDb   = null;   // tracks which db instance owns the cache
+let _stmtCache = null;
+
+function getStmts(db) {
+  if (db === _stmtDb) return _stmtCache;
+  _stmtDb = db;
+  _stmtCache = {
+    insertCard: db.prepare(`
+      INSERT OR IGNORE INTO cards (
+        oracle_id, name, lang, layout,
+        mana_cost, cmc, type_line, oracle_text,
+        power, toughness, loyalty, defense,
+        hand_modifier, life_modifier,
+        colors, color_identity, produced_mana,
+        keywords, legalities, games,
+        reserved, edhrec_rank, penny_rank,
+        all_parts, prices, purchase_uris,
+        rulings_uri, scryfall_uri,
+        full_data
+      ) VALUES (
+        @oracle_id, @name, @lang, @layout,
+        @mana_cost, @cmc, @type_line, @oracle_text,
+        @power, @toughness, @loyalty, @defense,
+        @hand_modifier, @life_modifier,
+        @colors, @color_identity, @produced_mana,
+        @keywords, @legalities, @games,
+        @reserved, @edhrec_rank, @penny_rank,
+        @all_parts, @prices, @purchase_uris,
+        @rulings_uri, @scryfall_uri,
+        @full_data
+      )
+    `),
+    insertToken: db.prepare(`
+      INSERT OR IGNORE INTO tokens (
+        id, oracle_id, name, layout, type_line, oracle_text,
+        power, toughness, colors, color_identity,
+        keywords, all_parts, full_data
+      ) VALUES (
+        @id, @oracle_id, @name, @layout, @type_line, @oracle_text,
+        @power, @toughness, @colors, @color_identity,
+        @keywords, @all_parts, @full_data
+      )
+    `),
+    insertCardImage: db.prepare(`
+      INSERT OR IGNORE INTO card_images (
+        id, oracle_id, set_code, set_name, set_type,
+        rarity, released_at, collector_number, artist,
+        frame, frame_effects,
+        promo, reprint, variation, story_spotlight,
+        prices, purchase_uris,
+        image_uris, card_faces
+      ) VALUES (
+        @id, @oracle_id, @set_code, @set_name, @set_type,
+        @rarity, @released_at, @collector_number, @artist,
+        @frame, @frame_effects,
+        @promo, @reprint, @variation, @story_spotlight,
+        @prices, @purchase_uris,
+        @image_uris, @card_faces
+      )
+    `),
+    insertTokenImage: db.prepare(`
+      INSERT OR IGNORE INTO token_images (
+        id, token_oracle_id, set_code, set_name,
+        released_at, collector_number, artist,
+        image_uris, card_faces
+      ) VALUES (
+        @id, @token_oracle_id, @set_code, @set_name,
+        @released_at, @collector_number, @artist,
+        @image_uris, @card_faces
+      )
+    `),
+  };
+  return _stmtCache;
 }
 
 function toJson(value) {
@@ -146,31 +248,7 @@ function clearAll(db) {
 }
 
 function insertCard(db, card) {
-  db.prepare(`
-    INSERT OR IGNORE INTO cards (
-      oracle_id, name, lang, layout,
-      mana_cost, cmc, type_line, oracle_text,
-      power, toughness, loyalty, defense,
-      hand_modifier, life_modifier,
-      colors, color_identity, produced_mana,
-      keywords, legalities, games,
-      reserved, edhrec_rank, penny_rank,
-      all_parts, prices, purchase_uris,
-      rulings_uri, scryfall_uri,
-      full_data
-    ) VALUES (
-      @oracle_id, @name, @lang, @layout,
-      @mana_cost, @cmc, @type_line, @oracle_text,
-      @power, @toughness, @loyalty, @defense,
-      @hand_modifier, @life_modifier,
-      @colors, @color_identity, @produced_mana,
-      @keywords, @legalities, @games,
-      @reserved, @edhrec_rank, @penny_rank,
-      @all_parts, @prices, @purchase_uris,
-      @rulings_uri, @scryfall_uri,
-      @full_data
-    )
-  `).run({
+  getStmts(db).insertCard.run({
     oracle_id:      card.oracle_id || card.id,
     name:           card.name,
     lang:           card.lang || null,
@@ -204,17 +282,7 @@ function insertCard(db, card) {
 }
 
 function insertToken(db, card) {
-  db.prepare(`
-    INSERT OR IGNORE INTO tokens (
-      id, oracle_id, name, layout, type_line, oracle_text,
-      power, toughness, colors, color_identity,
-      keywords, all_parts, full_data
-    ) VALUES (
-      @id, @oracle_id, @name, @layout, @type_line, @oracle_text,
-      @power, @toughness, @colors, @color_identity,
-      @keywords, @all_parts, @full_data
-    )
-  `).run({
+  getStmts(db).insertToken.run({
     id:             card.id,
     oracle_id:      card.oracle_id || null,
     name:           card.name,
@@ -232,23 +300,7 @@ function insertToken(db, card) {
 }
 
 function insertCardImage(db, card) {
-  db.prepare(`
-    INSERT OR IGNORE INTO card_images (
-      id, oracle_id, set_code, set_name, set_type,
-      rarity, released_at, collector_number, artist,
-      frame, frame_effects,
-      promo, reprint, variation, story_spotlight,
-      prices, purchase_uris,
-      image_uris, card_faces
-    ) VALUES (
-      @id, @oracle_id, @set_code, @set_name, @set_type,
-      @rarity, @released_at, @collector_number, @artist,
-      @frame, @frame_effects,
-      @promo, @reprint, @variation, @story_spotlight,
-      @prices, @purchase_uris,
-      @image_uris, @card_faces
-    )
-  `).run({
+  getStmts(db).insertCardImage.run({
     id:               card.id,
     oracle_id:        card.oracle_id || card.id,
     set_code:         card.set || null,
@@ -272,17 +324,7 @@ function insertCardImage(db, card) {
 }
 
 function insertTokenImage(db, card) {
-  db.prepare(`
-    INSERT OR IGNORE INTO token_images (
-      id, token_oracle_id, set_code, set_name,
-      released_at, collector_number, artist,
-      image_uris, card_faces
-    ) VALUES (
-      @id, @token_oracle_id, @set_code, @set_name,
-      @released_at, @collector_number, @artist,
-      @image_uris, @card_faces
-    )
-  `).run({
+  getStmts(db).insertTokenImage.run({
     id:               card.id,
     token_oracle_id:  card.oracle_id || null,
     set_code:         card.set || null,
@@ -330,32 +372,159 @@ function updateMetadata(db, { sourceUpdatedAt, fileSize, cardCount, tokenCount }
   });
 }
 
-function searchCards(db, { q, page = 1, pageSize = 20 }) {
-  const pattern = `%${q || ''}%`;
-  const offset = (page - 1) * pageSize;
+// ---------------------------------------------------------------------------
+// Fix #1 + #2: FTS5-based search with server-side colour filtering
+//
+// Converts the user's query into FTS5 prefix tokens ("lightning"* "bolt"*)
+// which hit the cards_fts index instead of doing a full table scan with LIKE.
+// Color filters are applied as SQL WHERE clauses so the client never needs to
+// post-filter results, and the full pageSize is always satisfied.
+// ---------------------------------------------------------------------------
 
-  const total = db.prepare(`
-    SELECT COUNT(*) AS n FROM cards
-    WHERE name LIKE @pattern
-       OR type_line LIKE @pattern
-       OR oracle_text LIKE @pattern
-  `).get({ pattern }).n;
+// ─── Per-filter WHERE builders ────────────────────────────────────────────────
 
-  const rows = db.prepare(`
-    SELECT * FROM cards
-    WHERE name LIKE @pattern
-       OR type_line LIKE @pattern
-       OR oracle_text LIKE @pattern
-    ORDER BY
-      CASE WHEN name LIKE @exactPrefix THEN 0 ELSE 1 END,
-      name ASC
-    LIMIT @pageSize OFFSET @offset
-  `).all({ pattern, exactPrefix: `${q || ''}%`, pageSize, offset });
+// searchIn: 'all' searches name+type_line+oracle_text (default)
+//           'name' restricts to the name column only
+//           'oracle' restricts to the oracle_text column only
+function toFtsQuery(q, searchIn = 'all') {
+  const tokens = (q || '').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+  const tokenStr = tokens.map(t => `"${t.replace(/"/g, '""')}"*`).join(' ');
+  if (searchIn === 'oracle') return `oracle_text : ${tokenStr}`;
+  if (searchIn === 'name')   return `name : ${tokenStr}`;
+  return tokenStr; // all columns
+}
+
+function buildColorWhere(colors) {
+  if (!colors || !colors.length) return '';
+  const clauses = colors.map(c =>
+    c === 'C'
+      ? `json_array_length(c.color_identity) = 0`
+      : `c.color_identity LIKE '%"${c}"%'`
+  );
+  return `AND (${clauses.join(' OR ')})`;
+}
+
+// types come from a fixed set so inline is safe
+function buildTypeWhere(types) {
+  if (!types || !types.length) return '';
+  const clauses = types.map(t => `lower(c.type_line) LIKE '%${t.toLowerCase()}%'`);
+  return `AND (${clauses.join(' OR ')})`;
+}
+
+function buildCmcWhere(cmcMin, cmcMax) {
+  const parts = [];
+  if (cmcMin != null && cmcMin !== '') parts.push(`c.cmc >= ${Number(cmcMin)}`);
+  if (cmcMax != null && cmcMax !== '') parts.push(`c.cmc <= ${Number(cmcMax)}`);
+  return parts.length ? `AND ${parts.join(' AND ')}` : '';
+}
+
+// rarities come from a fixed set ('common','uncommon','rare','mythic') — safe to inline
+function buildRarityWhere(rarities) {
+  if (!rarities || !rarities.length) return '';
+  const vals = rarities.map(r => `'${r}'`).join(',');
+  return `AND EXISTS (
+    SELECT 1 FROM card_images ci
+    WHERE ci.oracle_id = c.oracle_id AND ci.rarity IN (${vals})
+  )`;
+}
+
+// setCode is user input — strip to alphanumeric before inlining
+function buildSetWhere(setCode) {
+  if (!setCode || !setCode.trim()) return '';
+  const safe = setCode.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!safe) return '';
+  // c.sets is a JSON array of set codes stored by updateCardSets()
+  return `AND c.sets LIKE '%"${safe}"%'`;
+}
+
+// legality — format name from a fixed list, strip non-alpha to be safe
+function buildLegalityWhere(legality) {
+  if (!legality) return '';
+  const safe = legality.replace(/[^a-z_]/g, '');
+  return `AND json_extract(c.legalities, '$.${safe}') = 'legal'`;
+}
+
+// game_changer is a Scryfall boolean stored in full_data JSON
+function buildGameChangerWhere(gameChanger) {
+  if (!gameChanger) return '';
+  return `AND json_extract(c.full_data, '$.game_changer') = 1`;
+}
+
+// power / toughness — GLOB guards against non-numeric values like '*'
+function buildPowerWhere(min, max) {
+  const parts = [];
+  if (min != null && min !== '') parts.push(`CAST(c.power AS REAL) >= ${Number(min)}`);
+  if (max != null && max !== '') parts.push(`CAST(c.power AS REAL) <= ${Number(max)}`);
+  return parts.length ? `AND c.power GLOB '[0-9]*' AND ${parts.join(' AND ')}` : '';
+}
+
+function buildToughnessWhere(min, max) {
+  const parts = [];
+  if (min != null && min !== '') parts.push(`CAST(c.toughness AS REAL) >= ${Number(min)}`);
+  if (max != null && max !== '') parts.push(`CAST(c.toughness AS REAL) <= ${Number(max)}`);
+  return parts.length ? `AND c.toughness GLOB '[0-9]*' AND ${parts.join(' AND ')}` : '';
+}
+
+function searchCards(db, {
+  q = '', page = 1, pageSize = 20,
+  colors = [], searchIn = 'all',
+  types = [], cmcMin = null, cmcMax = null, rarities = [],
+  setCode = '', legality = '', gameChanger = false,
+  powerMin = null, powerMax = null,
+  toughnessMin = null, toughnessMax = null,
+} = {}) {
+  const offset     = (page - 1) * pageSize;
+  const ftsQuery   = q ? toFtsQuery(q, searchIn) : null;
+  const extraWhere = [
+    buildColorWhere(colors),
+    buildTypeWhere(types),
+    buildCmcWhere(cmcMin, cmcMax),
+    buildRarityWhere(rarities),
+    buildSetWhere(setCode),
+    buildLegalityWhere(legality),
+    buildGameChangerWhere(gameChanger),
+    buildPowerWhere(powerMin, powerMax),
+    buildToughnessWhere(toughnessMin, toughnessMax),
+  ].join(' ');
+
+  const hasAnyFilter = ftsQuery || colors.length || types.length ||
+    cmcMin != null || cmcMax != null || rarities.length ||
+    setCode || legality || gameChanger ||
+    powerMin != null || powerMax != null ||
+    toughnessMin != null || toughnessMax != null;
+
+  if (!hasAnyFilter) return { cards: [] };
+
+  let rows;
+  if (ftsQuery) {
+    rows = db.prepare(`
+      SELECT c.*
+      FROM cards_fts
+      JOIN cards c ON c.rowid = cards_fts.rowid
+      WHERE cards_fts MATCH ?
+      ${extraWhere}
+      ORDER BY cards_fts.rank
+      LIMIT ? OFFSET ?
+    `).all(ftsQuery, pageSize, offset);
+  } else {
+    rows = db.prepare(`
+      SELECT c.*
+      FROM cards c
+      WHERE 1=1 ${extraWhere}
+      ORDER BY c.name ASC
+      LIMIT ? OFFSET ?
+    `).all(pageSize, offset);
+  }
 
   return {
     cards: rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) })),
-    total,
   };
+}
+
+// Called at end of sync to rebuild the FTS index from the cards table.
+function rebuildFts(db) {
+  db.exec(`INSERT INTO cards_fts(cards_fts) VALUES('rebuild')`);
 }
 
 function getCard(db, { oracleId }) {
@@ -395,6 +564,7 @@ module.exports = {
   insertTokenImage,
   updateCardSets,
   updateMetadata,
+  rebuildFts,
   searchCards,
   getCard,
   getCardImages,

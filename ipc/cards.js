@@ -23,6 +23,7 @@ function registerCardsHandlers(ipcMain, getDb, getWindow) {
     });
   });
 
+  // Fix #2: colors array is forwarded to searchCards for server-side filtering
   ipcMain.handle('cards:search',       (_, args) => searchCards(getDb(), args));
   ipcMain.handle('cards:getCard',      (_, args) => getCard(getDb(), args));
   ipcMain.handle('cards:getCardImages',(_, args) => getCardImages(getDb(), args));

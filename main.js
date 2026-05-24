@@ -3,7 +3,6 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const { initLibrary } = require('./db/library');
-const { seedLibrary } = require('./db/seed');
 const { initCards } = require('./db/cards');
 const { registerLibraryHandlers } = require('./ipc/library');
 const { registerCardsHandlers } = require('./ipc/cards');
@@ -21,6 +20,7 @@ function createWindow() {
     minHeight: 640,
     frame: false,
     backgroundColor: '#0D0D0D',
+    icon: path.join(__dirname, 'icon.png'),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -29,18 +29,23 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'src', 'dashboard.html'));
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'dist', 'renderer', 'index.html'));
+  }
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
+app.name = 'Karn Forge';
+
 app.whenReady().then(() => {
   const userDataPath = app.getPath('userData');
 
   libraryDb = initLibrary(userDataPath);
-  seedLibrary(libraryDb);
-
   cardsDb = initCards(userDataPath);
 
   ipcMain.on('window-minimize', () => mainWindow?.minimize());

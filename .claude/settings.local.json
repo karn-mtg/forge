@@ -27,7 +27,26 @@
       "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/cards'\\); console.log\\('OK'\\)\")",
       "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./preload.js'\\)\")",
       "Bash(node -e \"const lib = require\\('./db/library'\\); console.log\\(Object.keys\\(lib\\).filter\\(k=>k.includes\\('rrangement'\\)\\)\\)\")",
-      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/sync'\\); console.log\\('All modules OK'\\)\")"
+      "Bash(node -e \"require\\('./db/library'\\); require\\('./ipc/library'\\); require\\('./db/sync'\\); console.log\\('All modules OK'\\)\")",
+      "mcp__ide__getDiagnostics",
+      "WebSearch",
+      "PowerShell(Copy-Item *)",
+      "Bash(New-Item -ItemType Directory -Force \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\src\\\\renderer\\\\public\")",
+      "Bash(Out-Null)",
+      "Bash(Copy-Item \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\icon.png\" \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\src\\\\renderer\\\\public\\\\icon.png\" -Force)",
+      "Bash(Write-Host \"Done\")",
+      "Bash(npx vite *)",
+      "Bash(Remove-Item *)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(python -c \"import sys,json; p=json.load\\(sys.stdin\\); print\\(json.dumps\\({**p.get\\('dependencies',{}\\),**p.get\\('devDependencies',{}\\)}, indent=2\\)\\)\")",
+      "Bash(Write-Host \"Deleted SyncToast.tsx and ConfirmModal.tsx\")",
+      "Bash(Copy-Item \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\biglogo.png\" \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\src\\\\renderer\\\\public\\\\biglogo.png\" -Force)",
+      "Bash(Write-Host \"Copied.\")",
+      "PowerShell(cd C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge; npx tsc --noEmit 2>&1 | Where-Object { $_ -match \"marked|sticker|makeStickerEl\" })",
+      "WebFetch(domain:mana.andrewgioia.com)",
+      "Bash(wsl -e md5sum \"/mnt/c/Users/GuiDi/workspace/karnforge/src/renderer/pages/DeckView.tsx\")",
+      "Bash(certutil -hashfile \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\src\\\\renderer\\\\pages\\\\DeckView.tsx\" MD5)",
+      "Bash(powershell *)"
     ]
   }
 }

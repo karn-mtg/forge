@@ -1,0 +1,362 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mana font — MTG mana/card symbols */
+@import 'mana-font/css/mana.css';
+
+/* -webkit-app-region helpers for frameless window */
+.titlebar-drag  { -webkit-app-region: drag; }
+.no-drag        { -webkit-app-region: no-drag; }
+
+/* Material Symbols */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0D0D0D; }
+::-webkit-scrollbar-thumb { background: #2B2E33; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4e4639; }
+
+/* Glass sidebar shared across pages */
+.glass-sidebar {
+  background: rgba(26, 29, 34, 0.85);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+}
+
+/* Active sidebar tree item */
+.tree-item-active {
+  background: rgba(212, 175, 106, 0.15);
+  color: #f2ca83;
+}
+
+/* Sidebar disclosure arrows */
+details > summary            { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+.disclosure-arrow            { transition: transform 0.2s ease; }
+details[open] > summary .disclosure-arrow { transform: rotate(90deg); }
+
+/* Glass panel (deckview) */
+.glass-panel {
+  background: rgba(26, 29, 34, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(212, 175, 106, 0.1);
+}
+
+/* Group container (deckview) — border-color set inline per group */
+.group-container {
+  border: 1.5px dashed rgba(212, 175, 106, 0.25);
+  border-radius: 1rem;
+  background: rgba(20, 20, 20, 0.45);
+  padding: 1.5rem;
+  min-width: 420px;
+  position: absolute;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Canvas dot-grid (deckview) */
+.canvas-grid {
+  background-image: radial-gradient(circle, #2B2E33 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Stacked card effect (deckview) */
+.card-stack {
+  position: relative;
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.card-stack .card-layer {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(78, 70, 57, 0.5);
+  background: #1c1b1b;
+  transition: transform 0.2s ease;
+}
+.card-stack:hover .card-layer-1 { transform: translate(4px, -4px); }
+.card-stack:hover .card-layer-2 { transform: translate(8px, -8px); }
+
+/* Mana pip */
+.mana-pip {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 2px;
+}
+
+/* Selection outline */
+.canvas-item.selected {
+  outline: 2px solid rgba(242, 202, 131, 0.8);
+  outline-offset: 5px;
+  border-radius: 6px;
+}
+
+/* Rubber-band selection box */
+#sel-box {
+  position: absolute;
+  display: none;
+  border: 1.5px dashed rgba(242, 202, 131, 0.7);
+  background: rgba(242, 202, 131, 0.04);
+  pointer-events: none;
+  z-index: 400;
+  border-radius: 3px;
+}
+
+/* Infinite canvas */
+#canvas {
+  transform-origin: 0 0;
+  /* NOTE: will-change: transform intentionally omitted.
+     With it, Chromium rasterises the layer at scale 1.0 and GPU-upscales on
+     zoom-in, causing blurry text and images.  Without it, Chromium repaints at
+     the current scale so everything stays crisp at any zoom level. */
+  position: relative;
+  width: 4000px;
+  height: 3000px;
+}
+
+/* Group highlighted when a card is dragged over */
+.group-drop-highlight {
+  filter: brightness(1.3) !important;
+  box-shadow: 0 0 30px rgba(242, 202, 131, 0.15) !important;
+}
+
+/* Free-floating card on canvas */
+.card-free {
+  position: absolute;
+  z-index: 20;
+  cursor: grab;
+}
+.card-free:active { cursor: grabbing; }
+
+/* Text sticker (base — width overrides set inline) */
+.sticker:active { cursor: grabbing; }
+
+/* Markdown rendered preview inside a sticker */
+.markdown-note { cursor: text; }
+.markdown-note p  { margin: 0 0 0.4em 0; }
+.markdown-note p:last-child { margin-bottom: 0; }
+.markdown-note h1,.markdown-note h2,.markdown-note h3 {
+  color: #f2ca83;
+  font-weight: 700;
+  margin: 0.5em 0 0.25em;
+  line-height: 1.2;
+}
+.markdown-note h1 { font-size: 14px; }
+.markdown-note h2 { font-size: 13px; }
+.markdown-note h3 { font-size: 12px; }
+.markdown-note strong { color: rgba(255,255,255,0.9); font-weight: 700; }
+.markdown-note em    { font-style: italic; color: rgba(255,255,255,0.7); }
+.markdown-note code  {
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: monospace;
+  font-size: 11px;
+  color: #86efac;
+}
+.markdown-note pre {
+  background: rgba(0,0,0,0.35);
+  border-radius: 5px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+.markdown-note pre code {
+  background: none;
+  padding: 0;
+  font-size: 11px;
+}
+.markdown-note ul,.markdown-note ol {
+  margin: 0.25em 0;
+  padding-left: 1.2em;
+}
+.markdown-note li { margin: 0.1em 0; }
+.markdown-note hr {
+  border: none;
+  border-top: 1px solid rgba(242,202,131,0.2);
+  margin: 0.5em 0;
+}
+.markdown-note a { color: #7eb8f7; text-decoration: underline; }
+.sticker-view-hint {
+  display: none;
+  position: absolute;
+  bottom: 5px; right: 7px;
+  font-size: 9px;
+  color: rgba(242,202,131,0.35);
+  pointer-events: none;
+}
+
+/* Traffic light buttons */
+.traffic-light {
+  width: 12px; height: 12px;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.1s ease;
+  flex-shrink: 0;
+}
+.traffic-light:hover { filter: brightness(1.25); }
+.traffic-light:active { transform: scale(0.88); }
+.traffic-light-close    { background: #FF5F56; }
+.traffic-light-minimize { background: #FFBD2E; }
+.traffic-light-maximize { background: #27C93F; }
+
+/* ── Canvas widgets ──────────────────────────────────────────────────────── */
+.canvas-widget {
+  background: rgba(16, 18, 24, 0.93);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  overflow: visible;  /* allow resize-handle to sit at edges */
+  position: relative;
+}
+.canvas-widget .widget-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  user-select: none;
+}
+.canvas-widget .widget-name {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvas-widget .widget-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.25);
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.canvas-widget .widget-close-btn:hover {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
+}
+.canvas-widget .widget-body {
+  /* Padding lives inside the zoom wrapper (.wbz), not here */
+  padding: 0;
+  overflow: hidden;
+  border-radius: 0 0 0.75rem 0.75rem;
+}
+/* Zoom wrapper — injected by setWidgetBodyZoom(); carries padding so it scales with zoom */
+.canvas-widget .wbz {
+  padding: 10px 12px;
+  box-sizing: border-box;
+}
+
+/* ── Resize handles (widgets + stickers) ─────────────────────────────────── */
+/* Left / right edge handles — thin grab strip */
+.resize-handle-left,
+.resize-handle-right {
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  width: 10px;
+  cursor: ew-resize;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.resize-handle-left  { left:  -5px; }
+.resize-handle-right { right: -5px; }
+.canvas-widget:hover .resize-handle-left,
+.canvas-widget:hover .resize-handle-right,
+.sticker:hover .resize-handle-left,
+.sticker:hover .resize-handle-right { opacity: 1; }
+.resize-handle-left::after,
+.resize-handle-right::after {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 22px;
+  background: rgba(242, 202, 131, 0.38);
+  border-radius: 2px;
+}
+
+/* Bottom-right corner grip for stickers (height + width) */
+.resize-handle-br {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: se-resize;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 3px;
+  border-radius: 0 0 0.5rem 0;
+}
+.sticker:hover .resize-handle-br { opacity: 1; }
+.resize-handle-br::after {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(242, 202, 131, 0.45);
+  border-bottom: 2px solid rgba(242, 202, 131, 0.45);
+  border-radius: 0 0 2px 0;
+}
+
+/* Widget gear (params) button */
+.widget-params-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.2);
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.canvas-widget:hover .widget-params-btn {
+  opacity: 1;
+}
+.widget-params-btn:hover {
+  color: rgba(242, 202, 131, 0.8);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* sticker: allow resize — remove fixed width, use min-width */
+.sticker {
+  position: absolute;
+  min-width: 180px;
+  max-width: 600px;
+  background: rgba(26, 29, 34, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(242, 202, 131, 0.25);
+  border-radius: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  cursor: grab;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 30;
+  overflow: hidden;
+}

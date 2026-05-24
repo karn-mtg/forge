@@ -1,1 +1,52 @@
+# Dependencies
 node_modules/
+
+# Build outputs
+dist/
+out/
+.vite/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Electron packager / builder artifacts
+release/
+build/
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+*.snap
+*.zip
+*.tar.gz
+
+# SQLite / local DB (keep schema, ignore data files if any)
+*.db-shm
+*.db-wal
+
+# TypeScript cache
+*.tsbuildinfo

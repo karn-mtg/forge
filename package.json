@@ -1,25 +1,37 @@
 {
   "name": "karnforge",
+  "productName": "Karn Forge",
   "version": "1.0.0",
-  "description": "MTG Library Manager",
+  "description": "Karn Forge – MTG Deck Builder & Library Manager",
   "main": "main.js",
   "scripts": {
-    "start": "npm run build:css && electron .",
-    "dev": "concurrently \"npm run watch:css\" \"electron .\"",
-    "build:css": "tailwindcss -i ./src/styles/input.css -o ./src/styles/output.css --minify",
-    "watch:css": "tailwindcss -i ./src/styles/input.css -o ./src/styles/output.css --watch",
+    "dev": "concurrently \"vite\" \"cross-env NODE_ENV=development electron .\"",
+    "build": "vite build",
+    "start": "npm run build && electron .",
     "postinstall": "electron-rebuild -f -w better-sqlite3 --module-dir ."
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
+    "cross-env": "^10.1.0",
     "electron": "^33.3.1",
     "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14"
   },
   "dependencies": {
     "better-sqlite3": "^12.10.0",
-    "stream-json": "^1.9.1"
+    "mana-font": "^1.18.0",
+    "marked": "^18.0.4",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-router-dom": "^7.15.1",
+    "stream-json": "^1.9.1",
+    "zustand": "^5.0.13"
   }
 }
