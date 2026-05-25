@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { Card, CardImage } from '../types/electron';
 import { ManaCost, manaCostToHtml } from './ManaSymbol';
+import { useToastStore } from '../store/useToastStore';
 
 function renderOracleText(text: string): string {
   return manaCostToHtml(text, 13);
@@ -55,6 +56,7 @@ export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDe
       setCurrentImgUrl(url);
     }).catch(err => {
       console.error('Card detail error:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load card details', message: String(err) });
     }).finally(() => setIsLoading(false));
   }, [oracleId]);
 

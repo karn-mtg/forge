@@ -1,23 +1,37 @@
-import { useState } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { Header } from '../components/Header';
+import { useSearchStore } from '../store/useSearchStore';
 import { DeckCard } from '../components/DeckCard';
 
 export function Recents() {
   const { decks } = useLibraryStore();
-  const [search, setSearch] = useState('');
+  const { value: search, setPlaceholder, reset } = useSearchStore();
 
-  // Sort by updated_at descending
-  const recent = [...decks]
-    .filter(d => d.updated_at)
-    .sort((a, b) => new Date(b.updated_at!).getTime() - new Date(a.updated_at!).getTime())
-    .slice(0, 12);
+  useEffect(() => {
+    setPlaceholder('Filter recents…');
+    return () => reset();
+  }, [setPlaceholder, reset]);
 
-  const filtered = search ? recent.filter(d => d.name.toLowerCase().includes(search.toLowerCase())) : recent;
+  // Sort by updated_at descending, take top 12 — memoized so it only runs when decks change
+  const recent = useMemo(
+    () =>
+      [...decks]
+        .filter(d => d.updated_at)
+        .sort((a, b) => new Date(b.updated_at!).getTime() - new Date(a.updated_at!).getTime())
+        .slice(0, 12),
+    [decks],
+  );
+
+  const filtered = useMemo(
+    () =>
+      search
+        ? recent.filter(d => d.name.toLowerCase().includes(search.toLowerCase()))
+        : recent,
+    [recent, search],
+  );
 
   return (
     <>
-      <Header searchPlaceholder="Filter recents…" searchValue={search} onSearch={setSearch} />
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-8">
           <div>

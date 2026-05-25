@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
-import { Header } from '../components/Header';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { CardSearchPanel } from '../components/CardSearchPanel';
+import { useSearchStore } from '../store/useSearchStore';
 import { useConfirmStore } from '../store/useConfirmStore';
+import { useToastStore } from '../store/useToastStore';
 import type { CollectionEntry, Card } from '../types/electron';
 
 const CONDITION_STYLES: Record<string, string> = {
@@ -13,6 +14,8 @@ const CONDITION_STYLES: Record<string, string> = {
 };
 
 const CONDITIONS = ['NM', 'LP', 'MP', 'HP', 'DMG'];
+// Show stats for all conditions in priority order
+const CONDITIONS_ORDER = ['NM', 'LP', 'MP', 'HP', 'DMG'];
 
 type SortKey = 'name' | 'quantity' | 'condition' | 'price' | 'foil';
 type SortDir = 'asc' | 'desc';
@@ -67,16 +70,21 @@ export function Collection() {
   const [entries, setEntries] = useState<CollectionEntry[]>([]);
   const [cardNames, setCardNames] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
-  const [searchFilter, setSearchFilter] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('name');       // #13
-  const [sortDir, setSortDir] = useState<SortDir>('asc');         // #13
+  const { value: searchFilter, setPlaceholder, reset } = useSearchStore();
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [panelOpen, setPanelOpen] = useState(false);
   const [addForm, setAddForm] = useState<AddFormState | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editState, setEditState] = useState<EditState | null>(null);
 
-  const loadCollection = async () => {
+  useEffect(() => {
+    setPlaceholder('Filter collection…');
+    return () => reset();
+  }, [setPlaceholder, reset]);
+
+  const loadCollection = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await window.libraryAPI.getCollection();
@@ -88,18 +96,19 @@ export function Collection() {
           const names: Record<string, string> = {};
           for (const c of cards || []) names[c.oracle_id] = c.name;
           setCardNames(names);
-        } catch { /* ignore */ }
+        } catch { /* card names are a non-critical enhancement */ }
       }
     } catch (err) {
       console.error('Failed to load collection:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load collection', message: String(err) });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadCollection(); }, []);
+  useEffect(() => { loadCollection(); }, [loadCollection]);
 
-  // #12 – Stats: total owned, portfolio value, condition breakdown
+  // Stats: total owned, portfolio value, condition breakdown
   const stats = useMemo(() => {
     let totalQty = 0, portfolioValue = 0;
     const conds: Record<string, number> = {};
@@ -113,7 +122,7 @@ export function Collection() {
     return { totalQty, portfolioValue, conds };
   }, [entries]);
 
-  // #13 – Sort + filter
+  // Sort + filter
   const filtered = useMemo(() => {
     let list = [...entries];
     if (searchFilter) {
@@ -186,7 +195,8 @@ export function Collection() {
     if (!addForm?.card) return;
     setIsSubmitting(true);
     try {
-      await window.libraryAPI.addToCollection({
+      // Fetch the real DB id from the IPC so we can safely edit/delete without reload
+      const result = await window.libraryAPI.addToCollection({
         oracleId: addForm.card.oracle_id,
         scryfallId: addForm.card.scryfall_id || null,
         quantity: addForm.qty,
@@ -194,9 +204,8 @@ export function Collection() {
         condition: addForm.condition,
         acquiredPrice: addForm.price ? parseFloat(addForm.price) : null,
       });
-      // Bug #3: optimistic push — no full reload needed
       const newEntry: CollectionEntry = {
-        id: Date.now(),
+        id: result.id,                                                   // real DB id
         oracle_id: addForm.card.oracle_id,
         quantity: addForm.qty,
         foil: addForm.foil,
@@ -208,12 +217,13 @@ export function Collection() {
       setAddForm(null);
     } catch (err) {
       console.error('Failed to add to collection:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to add card', message: String(err) });
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // #24 – CSV export
+  // CSV export
   const handleExportCSV = () => {
     const rows = [['Name', 'Condition', 'Qty', 'Foil', 'Acquired Price (USD)']];
     for (const e of entries) {
@@ -233,10 +243,13 @@ export function Collection() {
     URL.revokeObjectURL(url);
   };
 
+  // Condition buckets that actually have cards — in priority order
+  const condStats = CONDITIONS_ORDER
+    .filter(c => stats.conds[c] != null)
+    .map(c => ({ cond: c, qty: stats.conds[c] }));
+
   return (
     <>
-      <Header searchPlaceholder="Filter collection…" searchValue={searchFilter} onSearch={setSearchFilter} />
-
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-6">
 
@@ -267,7 +280,7 @@ export function Collection() {
             </div>
           </div>
 
-          {/* #12 – Stats summary */}
+          {/* Stats summary — shows all non-empty condition buckets */}
           {!isLoading && entries.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div className="bg-surface border border-white/5 rounded-2xl p-4 shadow-xl">
@@ -280,7 +293,7 @@ export function Collection() {
                   {stats.portfolioValue > 0 ? `$${stats.portfolioValue.toFixed(2)}` : '—'}
                 </p>
               </div>
-              {Object.entries(stats.conds).slice(0, 2).map(([cond, qty]) => (
+              {condStats.map(({ cond, qty }) => (
                 <div key={cond} className="bg-surface border border-white/5 rounded-2xl p-4 shadow-xl">
                   <p className="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/40 mb-1">
                     <span className={`px-1.5 py-0.5 rounded border text-[9px] ${CONDITION_STYLES[cond] || ''}`}>{cond}</span>

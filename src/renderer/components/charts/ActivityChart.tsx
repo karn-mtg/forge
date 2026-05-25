@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import type { ActivityLogEntry } from '../../types/electron';
+import { useToastStore } from '../../store/useToastStore';
 
 const DAY_ABBR = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
@@ -12,20 +13,27 @@ export function ActivityChart({ initialDays = 7 }: ActivityChartProps) {
   const [log, setLog] = useState<ActivityLogEntry[]>([]);
 
   useEffect(() => {
-    window.libraryAPI.getActivityLog({ days }).then(setLog).catch(console.error);
+    window.libraryAPI.getActivityLog({ days }).then(setLog).catch(err => {
+      console.error('Activity log error:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load activity log', message: String(err) });
+    });
   }, [days]);
 
-  const countByDay: Record<string, number> = {};
-  for (const row of log) countByDay[row.day] = row.count;
+  const { countByDay, dates, maxCount } = useMemo(() => {
+    const countByDay: Record<string, number> = {};
+    for (const row of log) countByDay[row.day] = row.count;
 
-  const dates: string[] = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
+    const dates: string[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dates.push(d.toISOString().slice(0, 10));
+    }
 
-  const maxCount = Math.max(1, ...dates.map(d => countByDay[d] || 0));
+    const maxCount = Math.max(1, ...dates.map(d => countByDay[d] || 0));
+    return { countByDay, dates, maxCount };
+  }, [log, days]);
+
   const todayStr = new Date().toISOString().slice(0, 10);
 
   return (

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Deck } from '../types/electron';
+import { ManaSymbol } from './ManaSymbol';
 
 const FORMATS = [
   { value: 'commander', label: 'Commander' },
@@ -10,13 +11,9 @@ const FORMATS = [
   { value: 'pauper', label: 'Pauper' },
 ];
 
-const COLOR_BTNS = [
-  { color: 'W', bg: '#f0d870', textColor: '#000', title: 'White' },
-  { color: 'U', bg: '#4a7cc9', textColor: '#fff', title: 'Blue' },
-  { color: 'B', bg: '#2a2a2a', textColor: '#fff', title: 'Black', border: '#888' },
-  { color: 'R', bg: '#c0392b', textColor: '#fff', title: 'Red' },
-  { color: 'G', bg: '#27ae60', textColor: '#fff', title: 'Green' },
-];
+const COLOR_LABELS: Record<string, string> = {
+  W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green',
+};
 
 interface DeckSettingsModalProps {
   deck: Deck | null;
@@ -112,24 +109,23 @@ export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSetting
           </div>
           <div>
             <label className="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-2 block">Color Identity</label>
-            <div className="flex gap-2">
-              {COLOR_BTNS.map(({ color, bg, textColor, title, border }) => (
-                <button
-                  key={color}
-                  type="button"
-                  onClick={() => toggleColor(color)}
-                  title={title}
-                  className="w-8 h-8 rounded-full border-2 hover:scale-110 transition-all flex items-center justify-center text-[10px] font-bold"
-                  style={{
-                    background: bg,
-                    color: textColor,
-                    borderColor: selectedColors.has(color) ? 'white' : (border || 'transparent'),
-                    opacity: selectedColors.has(color) ? 1 : 0.5,
-                  }}
-                >
-                  {color}
-                </button>
-              ))}
+            <div className="flex gap-3">
+              {'WUBRG'.split('').map(color => {
+                const active = selectedColors.has(color);
+                return (
+                  <button
+                    key={color}
+                    type="button"
+                    onClick={() => toggleColor(color)}
+                    title={COLOR_LABELS[color]}
+                    className={`rounded-full transition-all hover:scale-110 ring-offset-2 ring-offset-surface-container ${
+                      active ? 'ring-2 ring-white/70 opacity-100 scale-105' : 'opacity-35 hover:opacity-60'
+                    }`}
+                  >
+                    <ManaSymbol sym={color} cost shadow size="1.6rem" />
+                  </button>
+                );
+              })}
             </div>
           </div>
           <label className="flex items-center gap-3 cursor-pointer">

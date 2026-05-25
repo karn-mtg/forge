@@ -17,7 +17,8 @@ export interface Deck {
   cover_image_url?: string;
   cover_scryfall_id?: string;
   power_level?: number;
-  is_favorite?: number | boolean;
+  /** Normalized to boolean at the IPC boundary (SQLite stores as 0/1). */
+  is_favorite?: boolean;
   description?: string;
   cards?: DeckCardEntry[];
   updated_at?: string;
@@ -65,6 +66,8 @@ export interface CardFullData {
   legalities?: Record<string, string>;
   prices?: { usd?: string; usd_foil?: string; eur?: string };
   flavor_text?: string;
+  /** EDHREC popularity rank from Scryfall (lower = more popular in Commander formats). */
+  edhrec_rank?: number;
 }
 
 export interface Card {
@@ -130,11 +133,24 @@ declare global {
       updateCardBoard(args: { id: number; board: string }): Promise<void>;
       updateCardQuantity(args: { id: number; quantity: number }): Promise<void>;
       getCollection(): Promise<CollectionEntry[]>;
-      addToCollection(args: unknown): Promise<void>;
+      addToCollection(args: {
+        oracleId: string;
+        scryfallId?: string | null;
+        quantity: number;
+        foil: boolean;
+        condition: string;
+        acquiredPrice: number | null;
+      }): Promise<{ id: number }>;
       removeFromCollection(args: { id: number }): Promise<void>;
       updateCollectionEntry(args: { id: number; quantity: number; condition: string; foil: boolean; acquiredPrice: number | null }): Promise<void>;
       getWishlist(): Promise<WishlistEntry[]>;
-      addToWishlist(args: unknown): Promise<void>;
+      addToWishlist(args: {
+        oracleId: string;
+        scryfallId?: string | null;
+        quantity?: number;
+        priority?: number;
+        note?: string;
+      }): Promise<{ id: number }>;
       removeFromWishlist(args: { id: number }): Promise<void>;
       updateWishlistEntry(args: { id: number; quantity: number; priority: number; note?: string }): Promise<void>;
       logActivity(args: unknown): Promise<void>;
@@ -177,6 +193,8 @@ declare global {
       getCard(args: { oracleId: string }): Promise<Card | null>;
       getCardImages(args: { oracleId: string }): Promise<CardImage[]>;
       getCardsBatch(args: { oracleIds: string[] }): Promise<Card[]>;
+      /** Fetch EDHREC Commander inclusion % for a card name. Cached 24 h; returns null on error. */
+      fetchEdhrecData(args: { cardName: string }): Promise<{ pct: number | null }>;
       onProgress(cb: (data: SyncProgress) => void): () => void;
     };
   }

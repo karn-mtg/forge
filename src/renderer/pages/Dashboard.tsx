@@ -1,7 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { Header } from '../components/Header';
+import { useSearchStore } from '../store/useSearchStore';
+import { useFilteredDecks } from '../hooks/useFilteredDecks';
+import type { DeckSortKey } from '../hooks/useFilteredDecks';
 import { DeckCard, NewDeckCard } from '../components/DeckCard';
 import { NewDeckModal } from '../components/NewDeckModal';
 import { ActivityChart } from '../components/charts/ActivityChart';
@@ -12,25 +14,21 @@ export function Dashboard() {
   const { decks } = useLibraryStore();
   const navigate = useNavigate();
   const [newDeckOpen, setNewDeckOpen] = useState(false);
-  const [search, setSearch] = useState('');
+  const { value: search, setPlaceholder, reset } = useSearchStore();
   const [formatFilter, setFormatFilter] = useState('');
-  const [sortBy, setSortBy] = useState<'updated' | 'name' | 'cards'>('updated');
+  const [sortBy, setSortBy] = useState<DeckSortKey>('updated');
   const [showFilters, setShowFilters] = useState(false);
 
-  const displayed = useMemo(() => {
-    let list = [...decks];
-    if (search) list = list.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
-    if (formatFilter) list = list.filter(d => d.format === formatFilter);
-    if (sortBy === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
-    else if (sortBy === 'cards') list.sort((a, b) => (b.card_count ?? 0) - (a.card_count ?? 0));
-    else list.sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-    return search || formatFilter ? list : list.slice(0, 8);
-  }, [decks, search, formatFilter, sortBy]);
+  useEffect(() => {
+    setPlaceholder('Search decks…');
+    return () => reset();
+  }, [setPlaceholder, reset]);
+
+  // Show at most 8 decks on the dashboard unless the user is actively filtering
+  const displayed = useFilteredDecks(decks, { search, formatFilter, sortBy, limit: 8 });
 
   return (
     <>
-      <Header searchPlaceholder="Search decks…" searchValue={search} onSearch={setSearch} />
-
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-12">
 
@@ -84,7 +82,7 @@ export function Dashboard() {
                 ))}
                 <div className="ml-auto flex items-center gap-2">
                   <span className="text-[10px] text-on-surface-variant/40 uppercase tracking-widest font-bold">Sort:</span>
-                  <select value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)}
+                  <select value={sortBy} onChange={e => setSortBy(e.target.value as DeckSortKey)}
                     className="bg-surface-container/50 border border-white/10 rounded-lg px-2 py-1 text-[11px] focus:outline-none">
                     <option value="updated">Last Updated</option>
                     <option value="name">Name</option>
@@ -101,7 +99,7 @@ export function Dashboard() {
               ))}
             </div>
 
-            {/* Feature #7: "View all" link when slice is active */}
+            {/* "View all" link when limit is active */}
             {!search && !formatFilter && decks.length > 8 && (
               <div className="flex justify-center mt-8">
                 <button

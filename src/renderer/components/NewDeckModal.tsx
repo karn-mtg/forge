@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useToastStore } from '../store/useToastStore';
 import type { Card } from '../types/electron';
 
 interface NewDeckModalProps {
@@ -120,6 +121,7 @@ export function NewDeckModal({ isOpen, onClose, defaultFolderId }: NewDeckModalP
         });
       } catch (err) {
         console.error('Failed to add commander to deck:', err);
+        useToastStore.getState().push({ type: 'error', title: 'Commander not added', message: `Deck was created but the commander card could not be attached. ${String(err)}` });
       }
     }
 

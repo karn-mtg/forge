@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { FolderNode, Deck } from '../types/electron';
+import { useToastStore } from './useToastStore';
 
 interface LibraryState {
   folders: FolderNode[];
@@ -36,6 +37,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       set({ folders, decks, isLoaded: true, isLoading: false });
     } catch (err) {
       console.error('Failed to load library:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load library', message: String(err) });
       set({ isLoading: false });
     }
   },
@@ -47,7 +49,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         window.libraryAPI.getDecks(),
       ]);
       set({ folders, decks, isLoaded: true });
-    } catch {}
+    } catch (err) {
+      console.error('Failed to reload library:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to reload library', message: String(err) });
+    }
   },
 
   // Fix #4: optimistic update — no full reload after mutation

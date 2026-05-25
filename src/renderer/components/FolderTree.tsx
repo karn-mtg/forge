@@ -1,78 +1,13 @@
-import { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { createPortal } from 'react-dom';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, useMemo, createContext, useContext } from 'react';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useConfirmStore } from '../store/useConfirmStore';
 import { MoveDeckModal } from './MoveDeckModal';
+import { ContextMenu } from './ContextMenu';
+import type { MenuItem } from './ContextMenu';
 import type { FolderNode, Deck } from '../types/electron';
 
-// ─── Context Menu ─────────────────────────────────────────────────────────────
-
-interface MenuItem {
-  label?: string;
-  icon?: string;
-  onClick?: () => void;
-  danger?: boolean;
-  divider?: boolean;
-}
-
 interface CtxMenuState { x: number; y: number; items: MenuItem[] }
-
-function ContextMenu({ state, onClose }: { state: CtxMenuState; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: state.x, y: state.y });
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    setPos({
-      x: state.x + rect.width > window.innerWidth ? Math.max(4, window.innerWidth - rect.width - 4) : state.x,
-      y: state.y + rect.height > window.innerHeight ? Math.max(4, window.innerHeight - rect.height - 4) : state.y,
-    });
-  }, [state.x, state.y]);
-
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('mousedown', onDown, true);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown, true);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <div
-      ref={ref}
-      className="fixed z-[9999] min-w-[176px] rounded-lg py-1 shadow-2xl border border-white/10 overflow-hidden"
-      style={{ left: pos.x, top: pos.y, background: 'rgba(28,31,38,0.98)', backdropFilter: 'blur(20px)' }}
-    >
-      {state.items.map((item, i) =>
-        item.divider ? (
-          <div key={i} className="my-1 border-t border-white/8" />
-        ) : (
-          <button
-            key={i}
-            onClick={() => { item.onClick?.(); onClose(); }}
-            className={`w-full flex items-center gap-2.5 px-3 py-[6px] hover:bg-white/8 transition-colors text-left ${
-              item.danger ? 'text-red-400/90 hover:text-red-300' : 'text-on-surface-variant hover:text-on-surface'
-            }`}
-          >
-            {item.icon && (
-              <span className="material-symbols-outlined flex-shrink-0" style={{ fontSize: 14 }}>{item.icon}</span>
-            )}
-            <span style={{ fontSize: 13 }}>{item.label}</span>
-          </button>
-        )
-      )}
-    </div>,
-    document.body
-  );
-}
 
 // ─── Inline Rename ────────────────────────────────────────────────────────────
 
@@ -170,7 +105,12 @@ function DeckItem({ deck }: { deck: Deck }) {
             }`
           }
         >
-          <span className="material-symbols-outlined mr-2 flex-shrink-0" style={{ fontSize: 15 }}>style</span>
+          <span
+            className="material-symbols-outlined mr-2 flex-shrink-0"
+            style={{ fontSize: 15, fontVariationSettings: deck.is_favorite ? "'FILL' 1" : "'FILL' 0", color: deck.is_favorite ? 'var(--color-primary, #a78bfa)' : undefined }}
+          >
+            {deck.is_favorite ? 'star' : 'style'}
+          </span>
           <span className="truncate flex-1" style={{ fontSize: 13 }}>{deck.name}</span>
         </NavLink>
       )}
@@ -248,14 +188,19 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
   const [renaming, setRenaming] = useState<RenameTarget | null>(null);
   const [moveModal, setMoveModal] = useState<{ deckId: number; deckName: string } | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
 
-  // Group decks by folder_id
-  const decksByFolder = new Map<number | '__root__', Deck[]>();
-  for (const d of decks) {
-    const key = (d.folder_id ?? '__root__') as number | '__root__';
-    if (!decksByFolder.has(key)) decksByFolder.set(key, []);
-    decksByFolder.get(key)!.push(d);
-  }
+  // Group decks by folder_id — memoized so the Map is only rebuilt when decks change
+  const decksByFolder = useMemo(() => {
+    const map = new Map<number | '__root__', Deck[]>();
+    for (const d of decks) {
+      const key = (d.folder_id ?? '__root__') as number | '__root__';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(d);
+    }
+    return map;
+  }, [decks]);
   const rootDecks = decksByFolder.get('__root__') || [];
 
   const openCtx = (e: React.MouseEvent, items: MenuItem[]) => {
@@ -269,7 +214,9 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
     { label: 'New Deck', icon: 'add_circle', onClick: () => onNewDeck(null) },
   ];
 
-  const ctx: TreeCtx = {
+  // Memoize the context value so child tree nodes only re-render when their
+  // relevant slice of state changes, not on every Sidebar render.
+  const ctx = useMemo<TreeCtx>(() => ({
     decksByFolder,
     renaming,
     openCtx,
@@ -308,14 +255,18 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
     onDuplicateDeck: async (id) => {
       await duplicateDeck({ id });
     },
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [decksByFolder, renaming, openCtx, renameFolder, updateDeck, deleteFolder, deleteDeck, onNewFolder, onNewDeck, duplicateDeck]);
+
+  const isDecksActive = location.pathname === '/decks';
 
   return (
     <TreeContext.Provider value={ctx}>
       <details open>
         <summary
-          className="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer select-none transition-colors list-none"
+          className={`flex items-center px-3 py-1.5 rounded-md cursor-pointer select-none transition-colors list-none ${isDecksActive ? 'tree-item-active' : 'hover:bg-white/5'}`}
           onContextMenu={e => openCtx(e, rootMenuItems)}
+          onClick={e => { e.preventDefault(); navigate('/decks'); }}
         >
           <span
             className="material-symbols-outlined mr-1 flex-shrink-0 disclosure-arrow text-on-surface-variant/30"
@@ -329,7 +280,7 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
           >
             folder_special
           </span>
-          <span className="flex-1 text-on-surface-variant" style={{ fontSize: 13 }}>My Collections</span>
+          <span className={`flex-1 ${isDecksActive ? 'text-on-surface' : 'text-on-surface-variant'}`} style={{ fontSize: 13 }}>My Decks</span>
         </summary>
 
         <div className="ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5">
@@ -338,7 +289,7 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
         </div>
       </details>
 
-      {ctxMenu && <ContextMenu state={ctxMenu} onClose={() => setCtxMenu(null)} />}
+      {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxMenu.items} onClose={() => setCtxMenu(null)} />}
 
       <MoveDeckModal
         isOpen={!!moveModal}

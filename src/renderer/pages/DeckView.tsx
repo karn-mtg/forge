@@ -2,7 +2,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { marked } from 'marked';
 import { Sidebar } from '../components/Sidebar';
-import { Header } from '../components/Header';
 import { ToastStack } from '../components/ToastStack';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { CardSearchPanel } from '../components/CardSearchPanel';
@@ -10,11 +9,16 @@ import { CardDetailPanel } from '../components/CardDetailPanel';
 import { DeckSettingsModal } from '../components/DeckSettingsModal';
 import type { Deck, Card, DeckCardEntry, Arrangement } from '../types/electron';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useToastStore } from '../store/useToastStore';
 import { manaCostToHtml } from '../components/ManaSymbol';
 import { WidgetRegistry } from '../widgets/registry';
 import type { WidgetData, WidgetDef, WidgetGroup } from '../widgets/registry';
-import { persistCustomWidgets } from '../App';
+import { CardDecoratorRegistry } from '../widgets/overlayRegistry';
+import type { CardDecoratorDef, OverlayCardData } from '../widgets/overlayRegistry';
+import { overlayWrapperCss } from '../widgets/overlayRegistry';
+import { persistCustomWidgets, persistCustomDecorators } from '../App';
 import { WidgetEditorModal } from '../components/WidgetEditorModal';
+import { esc } from '../utils/escape';
 
 // Shared marked options: GFM + soft line breaks
 const MARKED_OPTS = { breaks: true, gfm: true };
@@ -49,9 +53,7 @@ function getCategory(typeLine: string): string {
   return 'Other';
 }
 
-function esc(s: string) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+// esc() is imported from utils/escape — see import above
 
 function pipHtml(manaCost: string) {
   return manaCostToHtml(manaCost || '', 11);
@@ -176,6 +178,11 @@ function updateCardElQtyBadge(cardEl: HTMLDivElement, qty: number) {
   } else { existing?.remove(); }
 }
 
+/**
+ * Build the base card element (layers + image only), then delegate badge
+ * creation to the canonical updateCardElBoardBadge / updateCardElQtyBadge
+ * helpers. This eliminates the duplicated inline badge HTML.
+ */
 function makeCardEl(data: CardData): HTMLDivElement {
   const el = document.createElement('div');
   el.className = 'card-stack w-40 h-[240px] canvas-item';
@@ -183,12 +190,10 @@ function makeCardEl(data: CardData): HTMLDivElement {
   el.dataset.oracleId = data.oracleId || '';
   el.dataset.cardJson = JSON.stringify(data);
   const imgUrl = data.imageUrl || '';
-  const isCmd = data.board === 'commander', isPrt = data.board === 'partner';
+
   el.innerHTML = `
     <div class="card-layer card-layer-1"></div>
     <div class="card-layer card-layer-2"></div>
-    ${(isCmd || isPrt) ? `<div data-board-badge style="position:absolute;top:6px;left:6px;z-index:30;width:20px;height:20px;border-radius:50%;background:${isCmd ? '#f2ca83' : '#7eb8f7'};color:#000;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.6);border:1px solid rgba(0,0,0,.3)" title="${isCmd ? 'Commander' : 'Partner'}"><span class="material-symbols-outlined" style="font-size:11px;line-height:1">shield</span></div>` : ''}
-    ${(data.qty ?? 1) > 1 ? `<div data-qty-badge style="position:absolute;top:6px;right:6px;z-index:30;width:18px;height:18px;border-radius:50%;background:#f2ca83;color:#000;font-size:9px;font-weight:900;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.5);border:1px solid rgba(0,0,0,.3)">${data.qty}</div>` : ''}
     <div class="card-layer relative overflow-hidden shadow-2xl flex flex-col" style="background:#1a1d22;border-radius:0.75rem">
       ${imgUrl
         ? `<img src="${imgUrl}" loading="lazy" class="flex-1 w-full object-cover object-top"
@@ -200,6 +205,15 @@ function makeCardEl(data: CardData): HTMLDivElement {
              <span class="material-symbols-outlined text-[48px] opacity-10">playing_cards</span>
            </div>`}
     </div>`;
+
+  // Use the canonical badge helpers — single source of truth for badge appearance
+  if (data.board === 'commander' || data.board === 'partner') {
+    updateCardElBoardBadge(el, data.board);
+  }
+  if ((data.qty ?? 1) > 1) {
+    updateCardElQtyBadge(el, data.qty!);
+  }
+
   return el;
 }
 
@@ -306,71 +320,60 @@ function makeStickerEl(text: string, initWidth?: number, initHeight?: number): H
   el.dataset.baseZ = '30';
 
   const startInEdit = !text.trim();
-  // Apply initial dimensions
-  el.style.width = (initWidth ?? 220) + 'px';
+  el.style.width = (initWidth ?? 240) + 'px';
   if (initHeight) el.style.height = initHeight + 'px';
 
   el.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <span class="text-[9px] font-bold uppercase tracking-widest text-primary/60 select-none">Note</span>
-      <div class="flex items-center gap-1">
-        <button class="sticker-edit opacity-0 group-hover:opacity-100 text-on-surface-variant/30 hover:text-primary transition-all leading-none" title="Edit (click note to edit)">
-          <span class="material-symbols-outlined text-[12px]">edit</span>
-        </button>
-        <button class="sticker-close text-on-surface-variant/40 hover:text-on-surface-variant transition-colors leading-none">
-          <span class="material-symbols-outlined text-[14px]">close</span>
-        </button>
-      </div>
-    </div>
-    <div class="sticker-view markdown-note text-on-surface/80 text-[12px] leading-relaxed min-h-[3em]"
-         style="${startInEdit ? 'display:none' : ''}"></div>
-    <textarea rows="3" placeholder="Add a note… (supports **markdown**)"
-      class="sticker-textarea w-full bg-transparent resize-none outline-none text-on-surface/80 placeholder:text-on-surface-variant/30 text-[12px] leading-relaxed"
+    <div class="sticker-view markdown-note text-on-surface/80 text-[12px] leading-relaxed"
+         style="min-height:3.5em;${startInEdit ? 'display:none' : ''}"></div>
+    <textarea rows="4" placeholder="Type a note… Use # for headings, **bold**, _italic_, - lists"
+      class="sticker-textarea w-full bg-transparent resize-none outline-none text-on-surface/80 placeholder:text-on-surface-variant/25 text-[12px] leading-relaxed"
       style="${startInEdit ? '' : 'display:none'}">${text ? esc(text) : ''}</textarea>
+    <button class="sticker-close" title="Remove note" style="position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity 0.15s;z-index:5;padding:0;flex-shrink:0">
+      <span class="material-symbols-outlined" style="font-size:12px;color:rgba(255,255,255,0.5);line-height:1">close</span>
+    </button>
     <div class="resize-handle-left"  title="Drag to resize"></div>
     <div class="resize-handle-right" title="Drag to resize"></div>
     <div class="resize-handle-br"    title="Drag to resize"></div>`;
 
   const viewEl   = el.querySelector<HTMLDivElement>('.sticker-view')!;
   const textarea = el.querySelector<HTMLTextAreaElement>('.sticker-textarea')!;
-  const editBtn  = el.querySelector<HTMLButtonElement>('.sticker-edit')!;
+  const closeBtn = el.querySelector<HTMLButtonElement>('.sticker-close')!;
 
   const renderView = (src: string) => {
+    // marked.parse is synchronous in v18 when async is not set
     viewEl.innerHTML = marked.parse(src, MARKED_OPTS) as string;
   };
 
   const enterEdit = () => {
     viewEl.style.display = 'none';
     textarea.style.display = '';
-    editBtn.style.display = 'none';
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   };
 
   const enterView = () => {
-    if (!textarea.value.trim()) return; // keep editing if empty
+    if (!textarea.value.trim()) return; // stay in edit if empty
     renderView(textarea.value);
     textarea.style.display = 'none';
     viewEl.style.display = '';
-    editBtn.style.display = '';
   };
 
   // Render initial text if any
   if (text.trim()) renderView(text);
 
-  // Click rendered view → edit mode
+  // Click rendered markdown → enter edit mode
   viewEl.addEventListener('click', (e) => { e.stopPropagation(); enterEdit(); });
-  // Edit pencil → edit mode
-  editBtn.addEventListener('click', (e) => { e.stopPropagation(); enterEdit(); });
-  // Blur textarea → view mode; Shift+Enter also commits
+  // Blur textarea → commit to view
   textarea.addEventListener('blur', enterView);
+  // Escape → commit; Shift+Enter is natural in textarea (newline)
   textarea.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Escape') { e.preventDefault(); enterView(); }
   });
 
-  // Show/hide edit pencil on sticker hover
-  el.addEventListener('mouseenter', () => { if (textarea.style.display === 'none') editBtn.style.opacity = '1'; });
-  el.addEventListener('mouseleave', () => { editBtn.style.opacity = '0'; });
+  // Show/hide close button on hover (don't show while in edit mode — close button handles it)
+  el.addEventListener('mouseenter', () => { closeBtn.style.opacity = '1'; });
+  el.addEventListener('mouseleave', () => { closeBtn.style.opacity = '0'; });
 
   return el;
 }
@@ -437,6 +440,26 @@ function makeWidgetEl(defId: string): HTMLDivElement {
     <div class="widget-body"></div>
     <div class="resize-handle-left"  title="Drag to resize"></div>
     <div class="resize-handle-right" title="Drag to resize"></div>`;
+  return el;
+}
+
+function makeDecoratorEl(defId: string): HTMLDivElement {
+  const def = CardDecoratorRegistry.get(defId);
+  const name = def?.name || defId;
+  const icon = def?.icon || 'layers';
+  const hasParams = (def?.params?.length ?? 0) > 0;
+  const el = document.createElement('div');
+  el.className = 'absolute canvas-decorator canvas-item';
+  el.dataset.decoratorDefId = defId;
+  el.dataset.baseZ = '25';
+  el.style.cssText = 'position:absolute;z-index:25;cursor:grab;';
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;background:rgba(13,15,20,0.92);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:5px 10px 5px 8px;box-shadow:0 2px 12px rgba(0,0,0,0.5);white-space:nowrap">
+      <span class="material-symbols-outlined" style="font-size:14px;color:rgba(242,202,131,0.8);flex-shrink:0;font-variation-settings:'FILL' 1">${icon}</span>
+      <span style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.7);font-family:-apple-system,sans-serif;flex:1;min-width:0">${esc(name)}</span>
+      ${hasParams ? `<button class="decorator-params-btn" title="Configure" style="width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;padding:0"><span class="material-symbols-outlined" style="font-size:11px;color:rgba(255,255,255,0.4);line-height:1">tune</span></button>` : ''}
+      <button class="decorator-close-btn" title="Remove overlay" style="width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;padding:0"><span class="material-symbols-outlined" style="font-size:11px;color:rgba(255,255,255,0.4);line-height:1">close</span></button>
+    </div>`;
   return el;
 }
 
@@ -541,12 +564,10 @@ export function DeckView() {
   // Selection HUD
   const [selCount, setSelCount] = useState<{ cards: number; groups: number } | null>(null);
   const [widgetPickerOpen, setWidgetPickerOpen] = useState(false);
-  const [selStatsOpen, setSelStatsOpen] = useState(false);
-  const [selStatsCards, setSelStatsCards] = useState<string[]>([]);
 
-  // Widget editor
+  // Widget / overlay editor
   const [widgetEditorOpen, setWidgetEditorOpen] = useState(false);
-  const [widgetEditorDef, setWidgetEditorDef] = useState<WidgetDef | null>(null); // null = new
+  const [widgetEditorDef, setWidgetEditorDef] = useState<WidgetDef | CardDecoratorDef | null>(null); // null = new
   // Force re-render of the picker after save/delete
   const [widgetRegistryVersion, setWidgetRegistryVersion] = useState(0);
   const bumpWidgetVersion = () => setWidgetRegistryVersion(v => v + 1);
@@ -579,6 +600,8 @@ export function DeckView() {
     elType?: string;
     ox: number; oy: number;
     init?: Map<HTMLDivElement, { l: number; t: number }>;
+    /** Set when elType === 'card-ghost': the group the card came from */
+    sourceGroupEl?: HTMLDivElement;
   } | null>(null);
   const panRef = useRef<{ ox: number; oy: number } | null>(null);
   const rbandRef = useRef<{ sx: number; sy: number } | null>(null);
@@ -604,6 +627,7 @@ export function DeckView() {
   const handleAddStickerRef  = useRef<() => void>(() => {});
   const openGroupModalRef    = useRef<() => void>(() => {});
   const openWidgetPickerRef  = useRef<() => void>(() => {});
+  const reconcileCanvasRef   = useRef<() => void>(() => {});
   const selRef = useRef<Set<HTMLDivElement>>(new Set());
   const selBoxRef = useRef<HTMLDivElement | null>(null);
   const pendingGroupFromSelRef = useRef<Set<HTMLDivElement> | null>(null);
@@ -632,6 +656,7 @@ export function DeckView() {
       setDeck(d);
       const cards = d.cards || [];
       setDeckCards(cards);
+      deckCardsRef.current = cards; // sync ref immediately so canvas helpers see fresh data
 
       // Fetch card details for mana curve + list view
       const oracleIds = [...new Set(cards.map(c => c.oracle_id).filter(Boolean))];
@@ -641,10 +666,18 @@ export function DeckView() {
           const map: Record<string, Card> = {};
           details.forEach(c => { map[c.oracle_id] = c; });
           setCardDetails(map);
+          cardDetailsRef.current = map; // sync ref immediately
         } catch {}
+      }
+      // Race condition fix: if arrangements already loaded before deck data arrived,
+      // the earlier reconcileCanvas() saw an empty deckCardsRef and skipped.
+      // Now that fresh data is in the refs, populate the canvas.
+      if (currentArrangementIdRef.current) {
+        reconcileCanvasRef.current();
       }
     } catch (err) {
       console.error('Failed to load deck:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load deck', message: String(err) });
     } finally {
       setIsLoading(false);
     }
@@ -688,7 +721,10 @@ export function DeckView() {
       try {
         const state = serializeCanvas();
         await window.libraryAPI.saveArrangementCanvas({ id: arrId, canvasJson: JSON.stringify(state) });
-      } catch (err) { console.error('Auto-save failed:', err); }
+      } catch (err) {
+        console.error('Auto-save failed:', err);
+        useToastStore.getState().push({ type: 'warning', title: 'Auto-save failed', message: 'Your canvas changes may not have been saved.' });
+      }
     }, 1500);
   }, []);
 
@@ -704,9 +740,9 @@ export function DeckView() {
   }, []);
   const serializeCanvas = useCallback(() => {
     const cv = canvasRef.current!;
-    const state: { tx: number; ty: number; sc: number; groups: unknown[]; freeCards: unknown[]; stickers: unknown[]; widgets: unknown[] } = {
+    const state: { tx: number; ty: number; sc: number; groups: unknown[]; freeCards: unknown[]; stickers: unknown[]; widgets: unknown[]; decorators: unknown[] } = {
       tx: txRef.current, ty: tyRef.current, sc: scRef.current,
-      groups: [], freeCards: [], stickers: [], widgets: [],
+      groups: [], freeCards: [], stickers: [], widgets: [], decorators: [],
     };
 
     cv.querySelectorAll<HTMLDivElement>(':scope > .group-container').forEach(g => {
@@ -744,15 +780,33 @@ export function DeckView() {
         params: w.dataset.widgetParams ? JSON.parse(w.dataset.widgetParams) : undefined,
       });
     });
+    cv.querySelectorAll<HTMLDivElement>(':scope > .canvas-decorator').forEach(d => {
+      state.decorators.push({
+        defId: d.dataset.decoratorDefId || '',
+        left: parseFloat(d.style.left) || 0,
+        top: parseFloat(d.style.top) || 0,
+        params: d.dataset.decoratorParams ? JSON.parse(d.dataset.decoratorParams) : undefined,
+      });
+    });
     return state;
   }, []);
 
-  // #23 – Push a snapshot to undo stack before a canvas mutation (defined after serializeCanvas)
+  // Push a snapshot to undo stack before a canvas mutation.
+  // Capped at 50 entries AND ~2 MB total to avoid unbounded memory growth on
+  // large canvases where each snapshot can be several KB.
+  const UNDO_MAX_ENTRIES = 50;
+  const UNDO_MAX_BYTES   = 2 * 1024 * 1024; // 2 MB
   const pushUndoSnapshot = useCallback(() => {
     if (!canvasRef.current) return;
     const snap = JSON.stringify(serializeCanvas());
     undoStackRef.current.push(snap);
-    if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+    // Trim by entry count
+    if (undoStackRef.current.length > UNDO_MAX_ENTRIES) undoStackRef.current.shift();
+    // Trim by total byte size
+    let totalBytes = undoStackRef.current.reduce((s, e) => s + e.length, 0);
+    while (totalBytes > UNDO_MAX_BYTES && undoStackRef.current.length > 1) {
+      totalBytes -= undoStackRef.current.shift()!.length;
+    }
     redoStackRef.current = [];
   }, [serializeCanvas]);
 
@@ -874,12 +928,81 @@ export function DeckView() {
     });
   }, [clearSel, selectEl, syncSelCount]);
 
-  // Make element draggable on canvas
+  // Make element draggable on canvas.
+  // Cards that are currently inside a group use a threshold + ghost approach so
+  // a plain click never ejects the card. All other elements (canvas cards, groups,
+  // stickers, widgets) use the existing immediate-drag path.
   const makeItemDraggable = useCallback((el: HTMLDivElement, elType: string) => {
     el.dataset.elType = elType;
     el.style.cursor = 'grab';
     el.addEventListener('mousedown', (e: MouseEvent) => {
       if ((e.target as HTMLElement).closest('button, a, input, textarea, .sticker-view, .resize-handle-left, .resize-handle-right, .resize-handle-br')) return;
+
+      // ── Card inside a group: threshold + ghost drag ───────────────────────
+      // Only cards use this path; groups/stickers/widgets still drag immediately.
+      const parentGroup = elType === 'card'
+        ? el.closest<HTMLDivElement>('.group-container')
+        : null;
+
+      if (parentGroup) {
+        // Don't stopPropagation — let makeCardClickable fire on the same card.
+        const startX = e.clientX, startY = e.clientY;
+        const slotSibling = el.nextSibling; // save DOM position for same-group restore
+
+        function onGroupMove(me: MouseEvent) {
+          if (Math.hypot(me.clientX - startX, me.clientY - startY) <= 8) return;
+          document.removeEventListener('mousemove', onGroupMove);
+          document.removeEventListener('mouseup', onGroupUp);
+
+          // Ghost: clone card, place on canvas at card's screen position
+          const ghost = el.cloneNode(true) as HTMLDivElement;
+          ghost.dataset.dragGhost    = 'true';
+          ghost.dataset.ghostOracleId = el.dataset.oracleId || '';
+          ghost.querySelectorAll('button,input,textarea').forEach(n => n.remove());
+
+          const cr  = el.getBoundingClientRect();
+          const wvr = viewportRef.current!.getBoundingClientRect();
+          const left = (cr.left - wvr.left - txRef.current) / scRef.current;
+          const top  = (cr.top  - wvr.top  - tyRef.current) / scRef.current;
+
+          ghost.style.cssText =
+            `position:absolute;left:${left}px;top:${top}px;z-index:500;cursor:grabbing;` +
+            `filter:drop-shadow(0 20px 48px rgba(0,0,0,.9));transform:scale(1.04);opacity:0.92;`;
+          ghost.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
+            .forEach(l => l.style.display = 'none');
+          canvasRef.current!.appendChild(ghost);
+
+          // Original stays in group as an invisible slot placeholder
+          el.style.opacity = '0';
+          el.style.pointerEvents = 'none';
+
+          // Attach slot info to the ghost for onMouseUp to retrieve
+          (ghost as any)._originalCard = el;
+          (ghost as any)._slotSibling  = slotSibling;
+
+          const cp = s2c(me.clientX, me.clientY);
+          dragRef.current = {
+            type: 'single',
+            el: ghost,
+            elType: 'card-ghost',
+            ox: cp.x - left,
+            oy: cp.y - top,
+            sourceGroupEl: parentGroup,
+          };
+        }
+
+        function onGroupUp() {
+          document.removeEventListener('mousemove', onGroupMove);
+          document.removeEventListener('mouseup', onGroupUp);
+          // Threshold not reached → plain click → card stays in group unchanged.
+        }
+
+        document.addEventListener('mousemove', onGroupMove);
+        document.addEventListener('mouseup', onGroupUp);
+        return; // ← skip the immediate-drag path below
+      }
+
+      // ── Canvas element: immediate drag ────────────────────────────────────
       e.stopPropagation(); e.preventDefault();
       el.style.cursor = 'grabbing';
 
@@ -911,23 +1034,7 @@ export function DeckView() {
     });
   }, [s2c, clearSel, selectEl, syncSelCount]);
 
-  const dropIntoGroup = useCallback((cardEl: HTMLDivElement, groupEl: HTMLDivElement) => {
-    cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
-    cardEl.classList.remove('canvas-item', 'selected');
-    selRef.current.delete(cardEl);
-    syncSelCount();
-    cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
-    canvasRef.current!.removeChild(cardEl);
-    groupEl.querySelector('.card-list')!.appendChild(cardEl);
-    relayoutGroup(groupEl);
-    cardEl.addEventListener('mousedown', function onDown(e: MouseEvent) {
-      if ((e.target as HTMLElement).closest('button, a')) return;
-      cardEl.removeEventListener('mousedown', onDown);
-      ejectCard(cardEl, e);
-    });
-    makeCardClickable(cardEl);
-  }, [makeCardClickable, syncSelCount]);
-
+  // ejectCard must be declared BEFORE dropIntoGroup — dropIntoGroup lists it as a dep.
   const ejectCard = useCallback((cardEl: HTMLDivElement, e: MouseEvent) => {
     const parentGroup = cardEl.closest<HTMLDivElement>('.group-container');
     const cr = cardEl.getBoundingClientRect();
@@ -950,6 +1057,20 @@ export function DeckView() {
     cardEl.style.transform = 'scale(1.06) rotate(2deg)';
     e.stopPropagation(); e.preventDefault();
   }, [s2c, makeItemDraggable, clearSel, selectEl, syncSelCount]);
+
+  const dropIntoGroup = useCallback((cardEl: HTMLDivElement, groupEl: HTMLDivElement) => {
+    cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
+    cardEl.classList.remove('canvas-item', 'selected');
+    selRef.current.delete(cardEl);
+    syncSelCount();
+    cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
+    canvasRef.current!.removeChild(cardEl);
+    groupEl.querySelector('.card-list')!.appendChild(cardEl);
+    relayoutGroup(groupEl);
+    // Drag-out is handled by makeItemDraggable (already on the card from canvas spawn).
+    // makeCardClickable handles click → open detail panel.
+    makeCardClickable(cardEl);
+  }, [ejectCard, makeCardClickable, syncSelCount]);
 
   const spawnCardOnCanvas = useCallback((card: Card, qty = 1, board = 'main') => {
     const r = viewportRef.current!.getBoundingClientRect();
@@ -1012,6 +1133,115 @@ export function DeckView() {
     attachResizeHandlers(el, 'widget');
     scheduleAutoSave();
   }, [s2c, makeItemDraggable, attachResizeHandlers, scheduleAutoSave]);
+
+  // ── Card Decorator helpers ─────────────────────────────────────────────────
+
+  /** Build OverlayCardData for a given oracleId from current card refs. */
+  const buildOverlayCardData = useCallback((oracleId: string): OverlayCardData => {
+    const det = cardDetailsRef.current[oracleId];
+    const ci = det?.color_identity;
+    return {
+      oracleId,
+      name: det?.name || oracleId,
+      typeLine: det?.type_line || '',
+      manaCost: det?.mana_cost || '',
+      cmc: det?.cmc || 0,
+      colorIdentity: Array.isArray(ci) ? (ci as string[])
+        : typeof ci === 'string' && ci ? (ci as string).split('').filter((c: string) => 'WUBRG'.includes(c))
+        : [],
+      edhrecRank: det?.full_data?.edhrec_rank,
+    };
+  }, []);
+
+  /** Apply (or refresh) overlays for one decorator pill onto all canvas cards. */
+  const applyDecoratorOverlays = useCallback((decoratorEl: HTMLDivElement) => {
+    const defId = decoratorEl.dataset.decoratorDefId;
+    if (!defId) return;
+    const def = CardDecoratorRegistry.get(defId);
+    if (!def) return;
+    const cv = canvasRef.current;
+    if (!cv) return;
+
+    const instanceParams = decoratorEl.dataset.decoratorParams
+      ? JSON.parse(decoratorEl.dataset.decoratorParams) as Record<string, number | string | boolean>
+      : undefined;
+
+    const cardEls = Array.from(cv.querySelectorAll<HTMLDivElement>('[data-oracle-id]'));
+    const cardDataList: OverlayCardData[] = cardEls.map(el => buildOverlayCardData(el.dataset.oracleId!));
+
+    // Sync render — immediate rank/data from local DB
+    cardEls.forEach((el, i) => {
+      el.querySelector(`[data-decorator-overlay="${CSS.escape(defId)}"]`)?.remove();
+      const html = CardDecoratorRegistry.render(defId, cardDataList[i], instanceParams);
+      if (!html) return;
+      const overlayEl = document.createElement('div');
+      overlayEl.setAttribute('data-decorator-overlay', defId);
+      overlayEl.style.cssText = overlayWrapperCss(def.anchor);
+      overlayEl.innerHTML = html;
+      el.appendChild(overlayEl);
+    });
+
+    // Async enrichment (e.g. EDHREC % from network)
+    if (def.asyncLoad) {
+      def.asyncLoad(cardDataList).then(enriched => {
+        enriched.forEach((partial, oracleId) => {
+          const cardEl = cv.querySelector<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oracleId)}"]`);
+          if (!cardEl) return;
+          cardEl.querySelector(`[data-decorator-overlay="${CSS.escape(defId)}"]`)?.remove();
+          const enrichedCard = { ...buildOverlayCardData(oracleId), ...partial };
+          const html = CardDecoratorRegistry.render(defId, enrichedCard, instanceParams);
+          if (!html) return;
+          const overlayEl = document.createElement('div');
+          overlayEl.setAttribute('data-decorator-overlay', defId);
+          overlayEl.style.cssText = overlayWrapperCss(def.anchor);
+          overlayEl.innerHTML = html;
+          cardEl.appendChild(overlayEl);
+        });
+      }).catch(() => {});
+    }
+  }, [buildOverlayCardData]);
+
+  /** Remove all overlay elements placed by a given decorator. */
+  const removeDecoratorOverlays = useCallback((defId: string) => {
+    if (!canvasRef.current) return;
+    canvasRef.current.querySelectorAll(`[data-decorator-overlay="${CSS.escape(defId)}"]`).forEach(el => el.remove());
+  }, []);
+
+  /** Re-apply all active decorator pills (called when card data changes). */
+  const refreshAllDecoratorOverlays = useCallback(() => {
+    if (!canvasRef.current) return;
+    canvasRef.current.querySelectorAll<HTMLDivElement>(':scope > .canvas-decorator').forEach(d => {
+      applyDecoratorOverlays(d);
+    });
+  }, [applyDecoratorOverlays]);
+
+  /** Bind close / params buttons on a decorator pill element. */
+  const attachDecoratorHandlers = useCallback((el: HTMLDivElement) => {
+    el.querySelector<HTMLButtonElement>('.decorator-close-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = el.dataset.decoratorDefId || '';
+      removeDecoratorOverlays(id);
+      el.remove();
+      scheduleAutoSave();
+    });
+    // Params button: reserved for future popover; no-op for now
+  }, [removeDecoratorOverlays, scheduleAutoSave]);
+
+  /** Place a new decorator pill at the top-center of the viewport. */
+  const spawnDecoratorOnCanvas = useCallback((defId: string) => {
+    if (!CardDecoratorRegistry.get(defId)) return;
+    const r = viewportRef.current!.getBoundingClientRect();
+    const cp = s2c(r.left + r.width / 2, r.top + 50);
+    const el = makeDecoratorEl(defId);
+    el.style.left = (cp.x - 70) + 'px';
+    el.style.top  = cp.y + 'px';
+    canvasRef.current!.appendChild(el);
+    makeItemDraggable(el, 'decorator');
+    applyDecoratorOverlays(el);
+    attachDecoratorHandlers(el);
+    scheduleAutoSave();
+  }, [s2c, makeItemDraggable, applyDecoratorOverlays, attachDecoratorHandlers, scheduleAutoSave]);
+
   // Restore canvas from JSON state
   const restoreCanvas = useCallback((state: {
     tx?: number; ty?: number; sc?: number;
@@ -1019,6 +1249,7 @@ export function DeckView() {
     freeCards?: (CardData & { left: number; top: number })[];
     stickers?: { left: number; top: number; text: string; width?: number; height?: number }[];
     widgets?: { defId: string; left: number; top: number; width?: number; params?: Record<string, number | string | boolean> }[];
+    decorators?: { defId: string; left: number; top: number; params?: Record<string, number | string | boolean> }[];
   }) => {
     const cv = canvasRef.current!;
     Array.from(cv.children).forEach(el => { if ((el as HTMLElement).id !== 'sel-box') el.remove(); });
@@ -1041,6 +1272,7 @@ export function DeckView() {
         cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
         cardList.appendChild(cardEl);
         cardEl.addEventListener('mousedown', function onDown(e: MouseEvent) {
+          if (e.button !== 0) return; // ignore right-click / middle-click — don't eject
           if ((e.target as HTMLElement).closest('button, a')) return;
           cardEl.removeEventListener('mousedown', onDown);
           ejectCard(cardEl, e);
@@ -1110,7 +1342,18 @@ export function DeckView() {
       });
       attachResizeHandlers(el, 'widget');
     }
-  }, [applyT, ejectCard, makeItemDraggable, makeCardClickable, attachContextMenu, attachResizeHandlers, scheduleAutoSave]);
+    for (const d of state.decorators || []) {
+      if (!CardDecoratorRegistry.get(d.defId)) continue;
+      const el = makeDecoratorEl(d.defId);
+      el.style.left = d.left + 'px';
+      el.style.top  = d.top  + 'px';
+      if (d.params) el.dataset.decoratorParams = JSON.stringify(d.params);
+      cv.appendChild(el);
+      makeItemDraggable(el, 'decorator');
+      applyDecoratorOverlays(el);
+      attachDecoratorHandlers(el);
+    }
+  }, [applyT, ejectCard, makeItemDraggable, makeCardClickable, attachContextMenu, attachResizeHandlers, scheduleAutoSave, applyDecoratorOverlays, attachDecoratorHandlers]);
 
   // Eject a card from its group onto the free canvas without starting a drag.
   // Used when deleting a group — cards survive, just become free items.
@@ -1192,7 +1435,9 @@ export function DeckView() {
         await window.libraryAPI.saveArrangementCanvas({ id: currentArrangementIdRef.current, canvasJson: JSON.stringify(state) });
         const cur = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
         if (cur) cur.canvas_json = JSON.stringify(state);
-      } catch {}
+      } catch (err) {
+        console.error('Failed to save arrangement before switching:', err);
+      }
     }
     currentArrangementIdRef.current = arrangementId;
     setCurrentArrangementId(arrangementId);
@@ -1234,7 +1479,10 @@ export function DeckView() {
       arrangementsCacheRef.current = arrs;
       setArrangements([...arrs]);
       await switchArrangement(arrs[0].id, false);
-    } catch (err) { console.error('Load arrangements failed:', err); }
+    } catch (err) {
+      console.error('Load arrangements failed:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load canvas arrangements', message: String(err) });
+    }
   }, [deckId, switchArrangement]);
 
   // ── Canvas event setup ────────────────────────────────────────────────────
@@ -1361,7 +1609,7 @@ export function DeckView() {
         const { el, elType } = dragRef.current;
         el!.style.left = (cp.x - dragRef.current.ox) + 'px';
         el!.style.top = (cp.y - dragRef.current.oy) + 'px';
-        if (elType === 'card') {
+        if (elType === 'card' || elType === 'card-ghost') {
           cv.querySelectorAll<HTMLElement>('.group-container').forEach(g =>
             g.classList.toggle('group-drop-highlight', hitTest(e, g)));
         }
@@ -1390,7 +1638,7 @@ export function DeckView() {
       if (type === 'multi') {
         dragRef.current.init!.forEach((_, el) => { el.style.zIndex = el.dataset.baseZ || '10'; });
       } else {
-        const { el, elType } = dragRef.current;
+        const { el, elType, sourceGroupEl } = dragRef.current;
         el!.style.zIndex = el!.dataset.baseZ || '10';
         if (elType === 'card') {
           el!.style.filter = ''; el!.style.transform = '';
@@ -1399,6 +1647,77 @@ export function DeckView() {
             g.classList.remove('group-drop-highlight');
             if (!dropped && hitTest(e, g)) { dropIntoGroup(el!, g); dropped = true; }
           });
+        } else if (elType === 'card-ghost') {
+          el!.style.filter = ''; el!.style.transform = '';
+          cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => g.classList.remove('group-drop-highlight'));
+
+          // Retrieve the original card and its saved DOM slot from the ghost element
+          const originalCard  = (el as any)._originalCard  as HTMLDivElement | undefined;
+          const slotSibling   = (el as any)._slotSibling   as ChildNode | null | undefined;
+
+          // Hit-test uses BOTH mouse position and ghost center so a drop near-but-
+          // slightly-outside the group bounding rect still registers correctly.
+          const ghostR = el!.getBoundingClientRect();
+          const ghostCx = (ghostR.left + ghostR.right)  / 2;
+          const ghostCy = (ghostR.top  + ghostR.bottom) / 2;
+          function ghostHitTest(g: HTMLDivElement) {
+            const r = g.getBoundingClientRect();
+            const mouseIn = e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom;
+            const ghostIn = ghostCx   > r.left && ghostCx   < r.right && ghostCy   > r.top && ghostCy   < r.bottom;
+            return mouseIn || ghostIn;
+          }
+
+          let dropped = false;
+          cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => {
+            if (dropped || !ghostHitTest(g)) return;
+            dropped = true;
+            el!.remove(); // remove ghost
+
+            if (!originalCard) return;
+            originalCard.style.opacity = '';
+            originalCard.style.pointerEvents = '';
+
+            if (g === sourceGroupEl) {
+              // ── Same group: restore card at its original DOM slot ──────────
+              // The card is still in the card-list (opacity 0). Re-insert at the
+              // exact slot it occupied so the stack order is preserved.
+              const cardList = g.querySelector<HTMLDivElement>('.card-list');
+              if (cardList) {
+                if (slotSibling && cardList.contains(slotSibling)) {
+                  cardList.insertBefore(originalCard, slotSibling);
+                }
+                // else: card is already at the right position (it never moved in the DOM)
+              }
+              relayoutGroup(g);
+            } else {
+              // ── Different group ───────────────────────────────────────────
+              originalCard.remove();
+              if (sourceGroupEl) relayoutGroup(sourceGroupEl);
+              dropIntoGroup(originalCard, g);
+            }
+          });
+
+          if (!dropped) {
+            // ── Canvas drop: place original at ghost's final canvas position ──
+            const ghostLeft = parseFloat(el!.style.left);
+            const ghostTop  = parseFloat(el!.style.top);
+            el!.remove();
+            if (originalCard && sourceGroupEl) {
+              originalCard.remove();
+              relayoutGroup(sourceGroupEl);
+              originalCard.style.opacity = '';
+              originalCard.style.pointerEvents = '';
+              originalCard.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
+                .forEach(l => l.style.display = 'none');
+              originalCard.style.cssText =
+                `position:absolute;left:${ghostLeft}px;top:${ghostTop}px;z-index:20;cursor:grab;`;
+              originalCard.dataset.baseZ = '20';
+              originalCard.classList.add('canvas-item');
+              cv.appendChild(originalCard);
+              // makeItemDraggable / makeCardClickable / attachContextMenu listeners
+              // are still on originalCard from when it was first spawned on canvas.
+            }
+          }
         }
       }
       dragRef.current = null;
@@ -1519,21 +1838,14 @@ export function DeckView() {
       setDeck(prev => prev ? { ...prev, cards: [...(prev.cards ?? []), newEntry] } : prev);
       updateDeckCardCount(deckId, 1);
       spawnCardOnCanvas(card); // always spawn — list and canvas are the same source
-    } catch (err) { console.error('addCardToDeck failed:', err); }
+    } catch (err) {
+      console.error('addCardToDeck failed:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to add card', message: String(err) });
+    }
   };
 
-  // Detail panel delegates the IPC call here so we get the real DB id for optimistic updates
-  const handleAddFromDetail = async (card: Card): Promise<void> => {
-    if (!deckId) return;
-    const result = await window.libraryAPI.addCardToDeck({ deckId, oracleId: card.oracle_id, board: 'main' });
-    try { await window.libraryAPI.logActivity({ event: 'card_added', deckId, oracleId: card.oracle_id }); } catch {}
-    const newEntry: DeckCardEntry = { id: result.id, oracle_id: card.oracle_id, board: 'main', quantity: 1 };
-    setDeckCards(prev => [...prev, newEntry]);
-    setCardDetails(prev => ({ ...prev, [card.oracle_id]: card }));
-    setDeck(prev => prev ? { ...prev, cards: [...(prev.cards ?? []), newEntry] } : prev);
-    updateDeckCardCount(deckId, 1);
-    spawnCardOnCanvas(card);
-  };
+  // Alias: detail panel uses the same add path so both callers get error-toast handling
+  const handleAddFromDetail = handleAddCard;
 
   // Add all search results to the deck and spawn each on the canvas
   const handleAddAll = async (cards: Card[]): Promise<void> => {
@@ -1697,6 +2009,7 @@ export function DeckView() {
   handleAddStickerRef.current  = handleAddSticker;
   openGroupModalRef.current    = () => { setGroupModalOpen(true); setGroupName(GROUP_PRESETS[groupColorIdx].name); };
   openWidgetPickerRef.current  = () => setWidgetPickerOpen(true);
+  reconcileCanvasRef.current   = reconcileCanvas;
 
   // ── Multi-select context-menu handlers ───────────────────────────────────
 
@@ -1899,7 +2212,12 @@ export function DeckView() {
     setDeck(prev => prev ? { ...prev, cards: (prev.cards ?? []).filter(dc => dc.id !== deckCardId) } : prev);
     updateDeckCardCount(deckId, -1);
     if (oracleId && canvasRef.current) {
-      canvasRef.current.querySelector<HTMLElement>(`[data-oracle-id="${CSS.escape(oracleId)}"]`)?.remove();
+      const cardEl = canvasRef.current.querySelector<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oracleId)}"]`);
+      if (cardEl) {
+        const group = cardEl.closest<HTMLDivElement>('.group-container');
+        cardEl.remove();
+        if (group) relayoutGroup(group); // update count badge + layout immediately
+      }
       scheduleAutoSave();
     }
   };
@@ -1922,14 +2240,28 @@ export function DeckView() {
   // Sync board badges whenever deck state changes (ensures commander/partner
   // shields always reflect the DB, even when the saved canvas JSON had a stale
   // board value due to the async load race or a missed auto-save).
+  // Also removes ghost cards: if the canvas loaded before deckCards arrived
+  // (race condition), removed cards slip through and must be evicted here.
+  // Additionally handles the case where handleRemoveCard removes a card that
+  // is inside a group — the group needs a relayout after the element is gone.
   useEffect(() => {
     if (!canvasRef.current || !deckCards.length) return;
     const boardMap = new Map<string, string>();
     deckCards.forEach(entry => boardMap.set(entry.oracle_id, entry.board || 'main'));
+    const groupsToRelayout = new Set<HTMLDivElement>();
     canvasRef.current.querySelectorAll<HTMLDivElement>('[data-oracle-id]').forEach(el => {
       const oid = el.dataset.oracleId;
-      if (oid) updateCardElBoardBadge(el, boardMap.get(oid) || 'main');
+      if (!oid) return;
+      if (!boardMap.has(oid)) {
+        // Ghost card — not in deck. Remove it and collect parent group for relayout.
+        const group = el.closest<HTMLDivElement>('.group-container');
+        el.remove();
+        if (group) groupsToRelayout.add(group);
+      } else {
+        updateCardElBoardBadge(el, boardMap.get(oid)!);
+      }
     });
+    groupsToRelayout.forEach(g => relayoutGroup(g));
   }, [deckCards]);
   // Refresh all canvas widgets whenever deck data changes
   useEffect(() => {
@@ -1938,15 +2270,11 @@ export function DeckView() {
     const data = buildWidgetDataFromState(deckCards, cardDetails, rawGrps);
     refreshAllWidgets(data);
   }, [deckCards, cardDetails, refreshAllWidgets]);
-  // #20: include commanders in the curve (they have casting costs)
-  const mainCards = deckCards.filter(c => c.board !== 'sideboard');
-  const curveBuckets = [0, 0, 0, 0, 0];
-  for (const dc of mainCards) {
-    const cmc = Math.round(cardDetails[dc.oracle_id]?.cmc || 0);
-    const idx = Math.min(4, Math.max(0, cmc - 1));
-    if (cmc > 0) curveBuckets[idx] += (dc.quantity || 1);
-  }
-  const curvePeak = Math.max(1, ...curveBuckets);
+  // Refresh all decorator overlays whenever deck card data changes
+  useEffect(() => {
+    if (!canvasRef.current || !deckCards.length) return;
+    refreshAllDecoratorOverlays();
+  }, [deckCards, cardDetails, refreshAllDecoratorOverlays]);
   const totalCards = deckCards.reduce((s, c) => s + (c.quantity || 1), 0);
 
   // ── List view data ────────────────────────────────────────────────────────
@@ -1970,13 +2298,11 @@ export function DeckView() {
       {/* Main area */}
       <main className="ml-[280px] h-screen relative flex flex-col flex-1 overflow-hidden">
 
-        <Header />
-
         {/* Deck subheader */}
         <div className="flex items-center justify-between px-margin-desktop border-b border-white/5 bg-surface/40 backdrop-blur-md h-14 flex-shrink-0">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-primary text-[20px]">dark_mode</span>
+              <span className="material-symbols-outlined text-primary text-[20px]">style</span>
               <h2 className="font-headline-md text-base font-bold text-on-surface">
                 {isLoading ? 'Loading…' : deck?.name || 'Unknown Deck'}
               </h2>
@@ -2013,38 +2339,22 @@ export function DeckView() {
                 )}
               </div>
             </div>
-            <div className="bg-surface-container-highest rounded-lg p-0.5 flex items-center">
-              <button
-                onClick={() => handleTabChange('workshop')}
-                className={`px-3 py-1 rounded-md font-bold text-label-md flex items-center gap-1.5 transition-all ${tab === 'workshop' ? 'bg-surface-container-high text-primary' : 'text-on-surface-variant hover:text-on-surface font-medium'}`}
-              >
-                <span className="material-symbols-outlined text-[16px]">account_tree</span>Workshop
-              </button>
-              <button
-                onClick={() => handleTabChange('list')}
-                className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'list' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
-              >
-                <span className="material-symbols-outlined text-[16px]">list</span>List
-              </button>
-            </div>
           </div>
 
-          {/* Mana curve */}
-          <div className="flex items-center gap-4">
-            <span className="font-label-sm text-[9px] text-primary uppercase tracking-widest font-bold">Mana Curve</span>
-            <div className="flex items-end gap-1.5 h-8">
-              {curveBuckets.map((count, i) => {
-                const pct = Math.round(count / curvePeak * 100);
-                const barCls = pct >= 80 ? 'bg-primary' : pct >= 40 ? 'bg-primary/70' : 'bg-primary/35';
-                return (
-                  <div key={i} className="flex flex-col items-center gap-0.5 h-full justify-end">
-                    <div className={`w-5 ${barCls} rounded-t-sm transition-all duration-500`} style={{ height: `${Math.max(pct, 4)}%` }} />
-                    <span className="text-[8px] text-on-surface-variant/40">{i < 4 ? i + 1 : '5+'}</span>
-                  </div>
-                );
-              })}
-            </div>
-            <span className="text-[10px] text-on-surface-variant/40">{totalCards} cards</span>
+          {/* Workshop / List tab toggle */}
+          <div className="bg-surface-container-highest rounded-lg p-0.5 flex items-center">
+            <button
+              onClick={() => handleTabChange('workshop')}
+              className={`px-3 py-1 rounded-md font-bold text-label-md flex items-center gap-1.5 transition-all ${tab === 'workshop' ? 'bg-surface-container-high text-primary' : 'text-on-surface-variant hover:text-on-surface font-medium'}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">account_tree</span>Workshop
+            </button>
+            <button
+              onClick={() => handleTabChange('list')}
+              className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'list' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">list</span>List
+            </button>
           </div>
         </div>
 
@@ -2234,31 +2544,6 @@ export function DeckView() {
                     </div>
                   )}
                 </div>
-
-                {selCount.cards > 0 && (
-                  <>
-                    <div className="w-px h-3.5 bg-white/10" />
-                    <button
-                      onClick={() => {
-                        const oids = Array.from(selRef.current)
-                          .flatMap(el => {
-                            if (el.classList.contains('card-stack') && el.dataset.oracleId) return [el.dataset.oracleId];
-                            if (el.classList.contains('group-container'))
-                              return Array.from(el.querySelectorAll<HTMLElement>('[data-oracle-id]'))
-                                .map(c => c.dataset.oracleId!)
-                                .filter(Boolean);
-                            return [];
-                          });
-                        setSelStatsCards([...new Set(oids)]);
-                        setSelStatsOpen(true);
-                      }}
-                      className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold text-primary/70 hover:text-primary hover:bg-primary/10 transition-all"
-                    >
-                      <span className="material-symbols-outlined text-[13px]">analytics</span>
-                      Stats
-                    </button>
-                  </>
-                )}
 
               </div>
             )}
@@ -2800,7 +3085,74 @@ export function DeckView() {
                 </div>
               )}
 
-              {WidgetRegistry.getAll().length === 0 && (
+              {/* Card Overlays section */}
+              {CardDecoratorRegistry.getAll().length > 0 && (
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/30 mb-2.5 px-0.5">Card Overlays</p>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {CardDecoratorRegistry.getAll().filter(d => d.readonly).map(def => (
+                      <button
+                        key={def.id}
+                        onClick={() => { spawnDecoratorOnCanvas(def.id); setWidgetPickerOpen(false); }}
+                        className="flex items-start gap-3 p-3 rounded-xl border border-white/5 bg-surface-container/40 hover:bg-white/5 hover:border-primary/20 transition-all text-left group"
+                      >
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-primary/10 group-hover:bg-primary/20 transition-all mt-0.5">
+                          <span className="material-symbols-outlined text-primary text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                            {def.icon}
+                          </span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-bold text-on-surface leading-tight mb-0.5">{def.name}</p>
+                          <p className="text-[10px] text-on-surface-variant/45 leading-snug">{def.description}</p>
+                        </div>
+                      </button>
+                    ))}
+                    {CardDecoratorRegistry.getAll().filter(d => !d.readonly).map(def => (
+                      <div
+                        key={def.id}
+                        className="flex items-start gap-3 p-3 rounded-xl border border-white/5 bg-surface-container/40 hover:border-primary/20 transition-all group relative"
+                      >
+                        <button
+                          className="flex items-start gap-3 flex-1 text-left min-w-0"
+                          onClick={() => { spawnDecoratorOnCanvas(def.id); setWidgetPickerOpen(false); }}
+                        >
+                          <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 bg-primary/10 group-hover:bg-primary/20 transition-all mt-0.5">
+                            <span className="material-symbols-outlined text-primary text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                              {def.icon}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[11px] font-bold text-on-surface leading-tight mb-0.5">{def.name}</p>
+                            <p className="text-[10px] text-on-surface-variant/45 leading-snug">{def.description}</p>
+                          </div>
+                        </button>
+                        <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0">
+                          <button
+                            title="Edit overlay"
+                            onClick={() => { setWidgetEditorDef(def); setWidgetEditorOpen(true); }}
+                            className="w-6 h-6 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-primary hover:bg-primary/10 transition-all"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">edit</span>
+                          </button>
+                          <button
+                            title="Delete overlay"
+                            onClick={async () => {
+                              CardDecoratorRegistry.unregister(def.id);
+                              await persistCustomDecorators();
+                              bumpWidgetVersion();
+                            }}
+                            className="w-6 h-6 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">delete_outline</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {WidgetRegistry.getAll().length === 0 && CardDecoratorRegistry.getAll().length === 0 && (
                 <div className="flex flex-col items-center justify-center h-32 gap-2 text-on-surface-variant/30">
                   <span className="material-symbols-outlined text-[36px]">widgets</span>
                   <p className="text-[12px]">No widgets yet</p>
@@ -2811,14 +3163,14 @@ export function DeckView() {
             {/* Footer hint */}
             <div className="px-5 py-3 border-t border-white/5 flex-shrink-0">
               <p className="text-[10px] text-on-surface-variant/30">
-                Click a widget to place it on the canvas · It updates live as you edit the deck
+                Click a widget or overlay to place it on the canvas · Updates live as you edit the deck
               </p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Widget editor modal */}
+      {/* Widget / overlay editor modal */}
       {widgetEditorOpen && (
         <WidgetEditorModal
           def={widgetEditorDef}
@@ -2827,6 +3179,12 @@ export function DeckView() {
           onSave={async (saved) => {
             WidgetRegistry.register({ ...saved, readonly: false });
             await persistCustomWidgets();
+            bumpWidgetVersion();
+            setWidgetEditorOpen(false);
+          }}
+          onSaveOverlay={async (saved) => {
+            CardDecoratorRegistry.register({ ...saved, readonly: false });
+            await persistCustomDecorators();
             bumpWidgetVersion();
             setWidgetEditorOpen(false);
           }}
@@ -2848,303 +3206,6 @@ export function DeckView() {
         <div className="fixed inset-0 z-[600]" onClick={() => setMultiMenu(null)} />
       )}
 
-      {/* Selection stats modal */}
-      {selStatsOpen && (
-        <div
-          className="fixed inset-0 z-[700] flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)' }}
-          onClick={e => { if (e.target === e.currentTarget) setSelStatsOpen(false); }}
-        >
-          <div className="glass-panel rounded-2xl shadow-2xl border border-white/5 w-[540px] max-h-[82vh] flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[18px] text-primary">analytics</span>
-                <h3 className="font-headline-md text-base font-bold text-on-surface">Selection Stats</h3>
-              </div>
-              <button
-                onClick={() => setSelStatsOpen(false)}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/10 transition-all"
-              >
-                <span className="material-symbols-outlined text-[18px]">close</span>
-              </button>
-            </div>
-            {/* Stats body */}
-            {(() => {
-              // Hypergeometric: P(at least 1 of K copies in n draws from D-card deck)
-              const pDraw = (D: number, K: number, n: number): number => {
-                if (K <= 0 || D <= 0) return 0;
-                if (K >= D) return 1;
-                let lp = 0;
-                for (let i = 0; i < n; i++) {
-                  const num = D - K - i;
-                  if (num <= 0) return 1;
-                  lp += Math.log(num) - Math.log(D - i);
-                }
-                return 1 - Math.exp(lp);
-              };
-
-              const COLOR_META: Record<string, { bg: string; text: string; label: string }> = {
-                W: { bg: '#f0d870', text: '#1a1a00', label: 'White'     },
-                U: { bg: '#4a7cc9', text: '#fff',    label: 'Blue'      },
-                B: { bg: '#4a4040', text: '#ccc',    label: 'Black'     },
-                R: { bg: '#c0392b', text: '#fff',    label: 'Red'       },
-                G: { bg: '#27ae60', text: '#fff',    label: 'Green'     },
-                C: { bg: '#7c7c7c', text: '#fff',    label: 'Colorless' },
-              };
-
-              const rows = selStatsCards.map(oid => ({
-                oracleId: oid,
-                qty: deckCards.find(e => e.oracle_id === oid)?.quantity || 1,
-                detail: cardDetails[oid],
-              }));
-
-              if (!rows.length) return (
-                <div className="flex-1 flex items-center justify-center py-16 text-on-surface-variant/30 text-[12px]">
-                  No card data available
-                </div>
-              );
-
-              const totalCopies = rows.reduce((s, r) => s + r.qty, 0);
-              const D = totalCards;
-
-              // Avg CMC weighted by copies (lands excluded)
-              const cmcRows = rows.filter(r => (r.detail?.cmc ?? 0) > 0 && !(r.detail?.type_line || '').toLowerCase().includes('land'));
-              const avgCmc = cmcRows.length
-                ? cmcRows.reduce((s, r) => s + (r.detail!.cmc!) * r.qty, 0)
-                  / cmcRows.reduce((s, r) => s + r.qty, 0)
-                : null;
-
-              // Color distribution
-              const colorCount: Record<string, number> = { W:0, U:0, B:0, R:0, G:0, C:0 };
-              rows.forEach(({ detail, qty }) => {
-                const ci = detail?.color_identity;
-                const colors: string[] = Array.isArray(ci) ? ci
-                  : (typeof ci === 'string' && ci) ? ci.split('').filter((x: string) => 'WUBRG'.includes(x))
-                  : [];
-                if (!colors.length) colorCount.C += qty;
-                else colors.forEach((x: string) => { if (x in colorCount) colorCount[x] += qty; });
-              });
-              const activeColors = (Object.entries(colorCount) as [string, number][])
-                .filter(([, v]) => v > 0)
-                .sort((a, b) => b[1] - a[1]);
-              const colorMax = Math.max(1, ...activeColors.map(([, v]) => v));
-
-              // Type breakdown
-              const typeMap: Record<string, number> = {};
-              rows.forEach(({ detail, qty }) => {
-                const t = (detail?.type_line || '').toLowerCase();
-                const cat = t.includes('creature') ? 'Creature'
-                  : t.includes('instant')      ? 'Instant'
-                  : t.includes('sorcery')      ? 'Sorcery'
-                  : t.includes('enchantment')  ? 'Enchantment'
-                  : t.includes('artifact')     ? 'Artifact'
-                  : t.includes('planeswalker') ? 'Planeswalker'
-                  : t.includes('land')         ? 'Land'
-                  : 'Other';
-                typeMap[cat] = (typeMap[cat] || 0) + qty;
-              });
-              const typeOrder = ['Creature','Instant','Sorcery','Enchantment','Artifact','Planeswalker','Land','Other'];
-              const typeEntries = typeOrder
-                .map(t => [t, typeMap[t] || 0] as [string, number])
-                .filter(([, v]) => v > 0);
-
-              // Mana curve (0–5, then 6+)
-              const curve = [0, 0, 0, 0, 0, 0, 0];
-              rows.forEach(({ detail, qty }) => {
-                curve[Math.min(6, Math.round(detail?.cmc || 0))] += qty;
-              });
-              const curveMax = Math.max(1, ...curve);
-
-              // Draw probability scenarios
-              const scenarios = [
-                { label: 'Opening hand',  draws: 7  },
-                { label: 'By turn 3',     draws: 10 },
-                { label: 'By turn 5',     draws: 12 },
-                { label: 'By turn 8',     draws: 15 },
-              ].map(s => ({ ...s, pct: Math.round(pDraw(D, totalCopies, s.draws) * 100) }));
-
-              // Per-card opening-hand odds (shown when ≤ 12 unique cards)
-              const perCard = rows.length <= 12
-                ? [...rows]
-                    .map(r => ({
-                      name: r.detail?.name || r.oracleId.slice(0, 24),
-                      qty: r.qty,
-                      pct: Math.round(pDraw(D, r.qty, 7) * 100),
-                    }))
-                    .sort((a, b) => b.pct - a.pct)
-                : null;
-
-              const pctColor = (p: number) => p >= 80 ? '#86efac' : p >= 50 ? '#f2ca83' : '#7eb8f7';
-
-              return (
-                <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-
-                  {/* Summary row */}
-                  <div className="flex items-center gap-3 text-[12px] flex-wrap">
-                    <span className="text-on-surface-variant/50">
-                      <span className="text-on-surface font-bold text-[15px]">{totalCopies}</span> copies
-                    </span>
-                    <span className="w-px h-3.5 bg-white/10 flex-shrink-0" />
-                    <span className="text-on-surface-variant/50">
-                      <span className="text-on-surface font-bold">{rows.length}</span> unique
-                    </span>
-                    {avgCmc !== null && (
-                      <>
-                        <span className="w-px h-3.5 bg-white/10 flex-shrink-0" />
-                        <span className="text-on-surface-variant/50">
-                          avg CMC <span className="text-primary font-bold">{avgCmc.toFixed(1)}</span>
-                        </span>
-                      </>
-                    )}
-                    <span className="w-px h-3.5 bg-white/10 flex-shrink-0" />
-                    <span className="text-on-surface-variant/35 text-[10px]">of {D}-card deck</span>
-                  </div>
-
-                  <div className="border-t border-white/[0.06]" />
-
-                  {/* Color distribution */}
-                  {activeColors.length > 0 && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/35 mb-3">Color Distribution</p>
-                      <div className="space-y-2">
-                        {activeColors.map(([col, v]) => {
-                          const meta = COLOR_META[col];
-                          const pct = Math.round(v / totalCopies * 100);
-                          return (
-                            <div key={col} className="flex items-center gap-2.5">
-                              <div
-                                className="w-[18px] h-[18px] rounded-full flex-shrink-0 flex items-center justify-center text-[8px] font-black select-none"
-                                style={{ background: meta.bg, color: meta.text }}
-                                title={meta.label}
-                              >
-                                {col}
-                              </div>
-                              <div className="flex-1 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all duration-500"
-                                  style={{ width: `${(v / colorMax) * 100}%`, background: meta.bg, opacity: 0.75 }}
-                                />
-                              </div>
-                              <span className="text-[11px] font-bold text-on-surface w-4 text-right tabular-nums">{v}</span>
-                              <span className="text-[10px] text-on-surface-variant/35 w-7 text-right tabular-nums">{pct}%</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Mana curve */}
-                  {curve.some(v => v > 0) && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/35 mb-3">Mana Curve</p>
-                      <div className="flex items-end gap-1.5 h-16">
-                        {curve.map((v, i) => (
-                          <div key={i} className="flex flex-col items-center gap-0.5 flex-1">
-                            {v > 0 && (
-                              <span className="text-[8px] text-primary/60 font-bold tabular-nums leading-none mb-0.5">{v}</span>
-                            )}
-                            <div
-                              className="w-full rounded-t-sm"
-                              style={{
-                                height: `${Math.max((v / curveMax) * 52, v > 0 ? 4 : 0)}px`,
-                                background: v > 0 ? 'rgba(242,202,131,0.4)' : 'transparent',
-                              }}
-                            />
-                            <span className="text-[8px] text-on-surface-variant/25 leading-none">{i < 6 ? i : '6+'}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Card types */}
-                  {typeEntries.length > 0 && (
-                    <div>
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/35 mb-2.5">Card Types</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {typeEntries.map(([type, count]) => (
-                          <div
-                            key={type}
-                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.05]"
-                          >
-                            <span className="text-[10px] text-on-surface-variant/50">{type}</span>
-                            <span className="text-[11px] font-bold text-on-surface">{count}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="border-t border-white/[0.06]" />
-
-                  {/* Draw probability */}
-                  <div>
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/35 mb-3">
-                      Draw Odds — {totalCopies} cop{totalCopies === 1 ? 'y' : 'ies'} / {D} cards
-                    </p>
-                    <div className="space-y-2.5">
-                      {scenarios.map(s => (
-                        <div key={s.label} className="flex items-center gap-3">
-                          <span className="text-[11px] text-on-surface-variant/50 w-28 flex-shrink-0">{s.label}</span>
-                          <div className="flex-1 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-500"
-                              style={{ width: `${s.pct}%`, background: pctColor(s.pct) }}
-                            />
-                          </div>
-                          <span
-                            className="text-[12px] font-bold tabular-nums w-9 text-right flex-shrink-0"
-                            style={{ color: pctColor(s.pct) }}
-                          >
-                            {s.pct}%
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-[9px] text-on-surface-variant/20 mt-3 leading-relaxed">
-                      P(≥1) via hypergeometric. Turn n = opening 7 + n draws.
-                    </p>
-                  </div>
-
-                  {/* Per-card breakdown (only when ≤ 12 unique cards selected) */}
-                  {perCard && perCard.length > 0 && (
-                    <>
-                      <div className="border-t border-white/[0.06]" />
-                      <div>
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/35 mb-3">Per Card — Opening Hand</p>
-                        <div className="space-y-1.5">
-                          {perCard.map((r, idx) => (
-                            <div key={idx} className="flex items-center gap-2.5">
-                              <span className="text-[11px] text-on-surface/70 flex-1 truncate min-w-0" title={r.name}>{r.name}</span>
-                              <span className="text-[9px] text-on-surface-variant/30 flex-shrink-0 tabular-nums">×{r.qty}</span>
-                              <div className="w-20 h-1.5 bg-white/[0.06] rounded-full overflow-hidden flex-shrink-0">
-                                <div
-                                  className="h-full rounded-full"
-                                  style={{ width: `${r.pct}%`, background: pctColor(r.pct) }}
-                                />
-                              </div>
-                              <span
-                                className="text-[10px] font-bold tabular-nums w-7 text-right flex-shrink-0"
-                                style={{ color: pctColor(r.pct) }}
-                              >
-                                {r.pct}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
-
       <ToastStack />
       <ConfirmDialog />
 
@@ -3153,9 +3214,12 @@ export function DeckView() {
         <ImportDeckModal
           deckId={deckId}
           onClose={() => setImportOpen(false)}
-          onImported={(count) => {
+          onImported={async (count) => {
             setImportOpen(false);
-            if (count > 0) loadDeckData();
+            if (count > 0) {
+              await loadDeckData();   // refs are written synchronously inside
+              reconcileCanvas();      // spawn any newly-imported cards on the canvas
+            }
           }}
         />
       )}

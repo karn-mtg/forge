@@ -1,21 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Header } from '../components/Header';
 import { useSyncStore } from '../store/useSyncStore';
-import { useToastStore } from '../store/useToastStore';
 
 export function Settings() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [saved, setSaved] = useState(false);
 
-  // Card database state (#16)
+  // Card database state
   const [dbStatus, setDbStatus] = useState<{ synced: boolean; cardCount?: number } | null>(null);
-  const { isSyncing, startSync } = useSyncStore();
-  // Read live sync progress from the shared toast (updated by useSyncStore internally)
-  const syncToast = useToastStore(s => s.toasts.find(t => t.id === 'kf-sync'));
-  const phase    = syncToast?.title ?? '';
-  const detail   = syncToast?.message ?? '';
-  const progress = syncToast?.progress ?? 0;
+  // Sync progress comes directly from useSyncStore — no toast coupling needed
+  const { isSyncing, startSync, phase, progress, detail } = useSyncStore();
 
   useEffect(() => {
     window.settingsAPI.get().then(s => { setSettings(s || {}); setIsLoading(false); });
@@ -45,7 +39,6 @@ export function Settings() {
 
   return (
     <>
-      <Header />
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-2xl mx-auto space-y-8">
           <div>

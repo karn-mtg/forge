@@ -1,8 +1,10 @@
-import { useState, useMemo } from 'react';
-import { Header } from '../components/Header';
+import { useState, useEffect } from 'react';
 import { DeckCard, NewDeckCard } from '../components/DeckCard';
 import { NewDeckModal } from '../components/NewDeckModal';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useSearchStore } from '../store/useSearchStore';
+import { useFilteredDecks } from '../hooks/useFilteredDecks';
+import type { DeckSortKey } from '../hooks/useFilteredDecks';
 
 const FORMAT_OPTIONS = [
   { value: '', label: 'All Formats' },
@@ -15,40 +17,35 @@ const FORMAT_OPTIONS = [
   { value: 'pauper', label: 'Pauper' },
 ];
 
-type SortKey = 'updated' | 'name' | 'cards' | 'created';
-
 export function AllDecks() {
   const { decks } = useLibraryStore();
-  const [search, setSearch] = useState('');
+  const { value: search, setPlaceholder, reset } = useSearchStore();
   const [formatFilter, setFormatFilter] = useState('');
-  const [sortBy, setSortBy] = useState<SortKey>('updated');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<DeckSortKey>('updated');
   const [newDeckOpen, setNewDeckOpen] = useState(false);
 
-  const filtered = useMemo(() => {
-    let list = [...decks];
-    if (search) list = list.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
-    if (formatFilter) list = list.filter(d => d.format === formatFilter);
-    if (sortBy === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
-    else if (sortBy === 'cards') list.sort((a, b) => (b.card_count ?? 0) - (a.card_count ?? 0));
-    else if (sortBy === 'created') list.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
-    else list.sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-    return list;
-  }, [decks, search, formatFilter, sortBy]);
+  useEffect(() => {
+    setPlaceholder('Search decks…');
+    return () => reset();
+  }, [setPlaceholder, reset]);
+
+  const filtered = useFilteredDecks(decks, { search, formatFilter, sortBy, favoritesOnly });
+
+  const hasActiveFilter = !!(search || formatFilter || favoritesOnly);
 
   return (
     <>
-      <Header searchPlaceholder="Search all decks…" searchValue={search} onSearch={setSearch} />
-
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-8">
 
           {/* Page header */}
           <div className="flex items-end justify-between">
             <div>
-              <h2 className="font-headline-lg text-2xl text-on-surface">All Decks</h2>
+              <h2 className="font-headline-lg text-2xl text-on-surface">My Decks</h2>
               <p className="text-on-surface-variant text-body-md mt-1">
                 {filtered.length} deck{filtered.length !== 1 ? 's' : ''}
-                {(search || formatFilter) ? ' matching filters' : ''}
+                {hasActiveFilter ? ' matching filters' : ''}
               </p>
             </div>
             <button
@@ -62,6 +59,26 @@ export function AllDecks() {
 
           {/* Filters */}
           <div className="flex items-center gap-3 flex-wrap">
+            {/* Favorites chip */}
+            <button
+              onClick={() => setFavoritesOnly(v => !v)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                favoritesOnly
+                  ? 'bg-primary/20 text-primary border border-primary/30'
+                  : 'text-on-surface-variant/50 hover:bg-white/5 border border-transparent hover:border-white/10'
+              }`}
+            >
+              <span
+                className="material-symbols-outlined text-[13px]"
+                style={{ fontVariationSettings: favoritesOnly ? "'FILL' 1" : "'FILL' 0" }}
+              >
+                star
+              </span>
+              Favorites
+            </button>
+
+            <div className="w-px h-4 bg-white/10" />
+
             {/* Format chips */}
             <div className="flex items-center gap-1.5 flex-wrap">
               {FORMAT_OPTIONS.map(f => (
@@ -84,7 +101,7 @@ export function AllDecks() {
               <span className="text-[10px] text-on-surface-variant/40 uppercase tracking-widest font-bold">Sort:</span>
               <select
                 value={sortBy}
-                onChange={e => setSortBy(e.target.value as SortKey)}
+                onChange={e => setSortBy(e.target.value as DeckSortKey)}
                 className="bg-surface-container/50 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] text-on-surface-variant focus:outline-none focus:border-primary/50 transition-all"
               >
                 <option value="updated">Last Updated</option>
@@ -96,7 +113,7 @@ export function AllDecks() {
           </div>
 
           {/* Grid */}
-          {filtered.length === 0 && !search && !formatFilter ? (
+          {filtered.length === 0 && !hasActiveFilter ? (
             <div className="flex flex-col items-center justify-center py-32 gap-4">
               <span className="material-symbols-outlined text-[64px] text-on-surface-variant/15">style</span>
               <p className="font-headline-md text-lg text-on-surface-variant/40">No decks yet</p>
@@ -107,12 +124,26 @@ export function AllDecks() {
                 Create your first deck
               </button>
             </div>
+          ) : filtered.length === 0 && favoritesOnly && !search && !formatFilter ? (
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              <span className="material-symbols-outlined text-[56px] text-on-surface-variant/15">star</span>
+              <p className="font-headline-md text-lg text-on-surface-variant/40">No favorites yet</p>
+              <p className="text-on-surface-variant/30 text-body-md text-center max-w-xs">
+                Open a deck and mark it as favorite to see it here.
+              </p>
+              <button
+                onClick={() => setFavoritesOnly(false)}
+                className="text-primary/70 hover:text-primary text-[12px] underline-offset-2 hover:underline transition-all"
+              >
+                Show all decks
+              </button>
+            </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 gap-3">
               <span className="material-symbols-outlined text-[48px] text-on-surface-variant/15">search_off</span>
-              <p className="text-on-surface-variant/40">No decks match your search</p>
+              <p className="text-on-surface-variant/40">No decks match your filters</p>
               <button
-                onClick={() => { setSearch(''); setFormatFilter(''); }}
+                onClick={() => { reset(); setFormatFilter(''); setFavoritesOnly(false); }}
                 className="text-primary/70 hover:text-primary text-[12px] underline-offset-2 hover:underline transition-all"
               >
                 Clear filters
@@ -120,7 +151,7 @@ export function AllDecks() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              <NewDeckCard onOpen={() => setNewDeckOpen(true)} />
+              {!favoritesOnly && <NewDeckCard onOpen={() => setNewDeckOpen(true)} />}
               {filtered.map(deck => (
                 <DeckCard key={deck.id} deck={deck} />
               ))}

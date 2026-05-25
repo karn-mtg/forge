@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Header } from '../components/Header';
 import { CardSearchPanel } from '../components/CardSearchPanel';
 import { useLibraryStore } from '../store/useLibraryStore';
+import { useToastStore } from '../store/useToastStore';
 import type { WishlistEntry, Card, Deck } from '../types/electron';
 
 const PRIORITY_LABELS: Record<number, string> = { 0: 'Low', 1: 'Normal', 2: 'High', 3: 'Critical' };
@@ -12,7 +12,31 @@ const PRIORITY_COLORS: Record<number, string> = {
   3: 'text-red-400/80',
 };
 
-// ─── Add-to-Deck popover (#10) ────────────────────────────────────────────────
+/** localStorage key for persisting wishlist drag-to-reorder. */
+const ORDER_STORAGE_KEY = 'kf-wishlist-order';
+
+function saveOrder(entries: WishlistEntry[]) {
+  try {
+    localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(entries.map(e => e.id)));
+  } catch { /* storage full or unavailable — not critical */ }
+}
+
+function applyStoredOrder(entries: WishlistEntry[]): WishlistEntry[] {
+  try {
+    const raw = localStorage.getItem(ORDER_STORAGE_KEY);
+    if (!raw) return entries;
+    const ids: number[] = JSON.parse(raw);
+    if (!ids.length) return entries;
+    const orderMap = new Map(ids.map((id, i) => [id, i]));
+    return [...entries].sort(
+      (a, b) => (orderMap.get(a.id) ?? 9999) - (orderMap.get(b.id) ?? 9999),
+    );
+  } catch {
+    return entries;
+  }
+}
+
+// ─── Add-to-Deck popover ──────────────────────────────────────────────────────
 
 function AddToDeckPopover({ oracleId, decks, onClose }: {
   oracleId: string;
@@ -73,47 +97,53 @@ function AddToDeckPopover({ oracleId, decks, onClose }: {
 export function Wishlist() {
   const { decks } = useLibraryStore();
   const [entries, setEntries] = useState<WishlistEntry[]>([]);
-  const [cards, setCards] = useState<Record<string, Card>>({});          // full card data for prices
-  const [collectionIds, setCollectionIds] = useState<Set<string>>(new Set()); // #11 crosscheck
+  const [cards, setCards] = useState<Record<string, Card>>({});
+  const [collectionIds, setCollectionIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [noteVal, setNoteVal] = useState('');
-  const [addToDeckId, setAddToDeckId] = useState<number | null>(null); // entry id with open popover
-  // #26 – drag-to-reorder state
+  const [addToDeckId, setAddToDeckId] = useState<number | null>(null);
+
+  // Drag-to-reorder
   const dragIdRef = useRef<number | null>(null);
   const [dragOverId, setDragOverId] = useState<number | null>(null);
 
-  const loadWishlist = async () => {
+  // Per-entry debounce timers for quantity/priority IPC calls
+  const updateTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
+  const loadWishlist = useCallback(async () => {
     setIsLoading(true);
     try {
       const [data, collection] = await Promise.all([
         window.libraryAPI.getWishlist(),
-        window.libraryAPI.getCollection().catch(() => []),
+        window.libraryAPI.getCollection().catch(() => [] as Awaited<ReturnType<typeof window.libraryAPI.getCollection>>),
       ]);
-      setEntries(data || []);
-      // #11 – build set of owned oracle_ids
+      // Restore previously saved drag order
+      const ordered = applyStoredOrder(data || []);
+      setEntries(ordered);
       setCollectionIds(new Set((collection || []).map(e => e.oracle_id).filter(Boolean)));
 
-      const oracleIds = [...new Set((data || []).map(e => e.oracle_id).filter(Boolean))];
+      const oracleIds = [...new Set(ordered.map(e => e.oracle_id).filter(Boolean))];
       if (oracleIds.length > 0) {
         try {
           const fetched = await window.cardsAPI.getCardsBatch({ oracleIds });
           const map: Record<string, Card> = {};
           for (const c of fetched || []) map[c.oracle_id] = c;
           setCards(map);
-        } catch { /* ignore */ }
+        } catch { /* card data is non-critical */ }
       }
     } catch (err) {
       console.error('Failed to load wishlist:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load wishlist', message: String(err) });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadWishlist(); }, []);
+  useEffect(() => { loadWishlist(); }, [loadWishlist]);
 
-  // #9 – total market value
+  // Total market value
   const totalValue = useMemo(() => {
     let sum = 0;
     for (const e of entries) {
@@ -124,31 +154,60 @@ export function Wishlist() {
   }, [entries, cards]);
 
   const handleAdd = async (card: Card) => {
-    // Bug #4: duplicate guard
     const existing = entries.find(e => e.oracle_id === card.oracle_id);
     if (existing) {
       await handleUpdate(existing.id, (existing.quantity || 1) + 1, existing.priority ?? 0, existing.note);
       setPanelOpen(false);
       return;
     }
-    await window.libraryAPI.addToWishlist({ oracleId: card.oracle_id, scryfallId: card.scryfall_id, quantity: 1 });
+    const result = await window.libraryAPI.addToWishlist({
+      oracleId: card.oracle_id,
+      scryfallId: card.scryfall_id,
+      quantity: 1,
+    });
     setPanelOpen(false);
-    const newEntry: WishlistEntry = { id: Date.now(), oracle_id: card.oracle_id, quantity: 1, priority: 0, note: '' };
-    setEntries(prev => [...prev, newEntry]);
+    const newEntry: WishlistEntry = { id: result.id, oracle_id: card.oracle_id, quantity: 1, priority: 0, note: '' };
+    setEntries(prev => {
+      const next = [...prev, newEntry];
+      saveOrder(next);
+      return next;
+    });
     setCards(prev => ({ ...prev, [card.oracle_id]: card }));
   };
 
   const handleRemove = async (id: number) => {
     await window.libraryAPI.removeFromWishlist({ id });
-    setEntries(prev => prev.filter(e => e.id !== id));
+    setEntries(prev => {
+      const next = prev.filter(e => e.id !== id);
+      saveOrder(next);
+      return next;
+    });
   };
 
-  const handleUpdate = async (id: number, quantity: number, priority: number, note?: string) => {
-    await window.libraryAPI.updateWishlistEntry({ id, quantity, priority, note });
+  /**
+   * Optimistically update local state immediately, then debounce the IPC call.
+   * This prevents an IPC storm when the user rapidly clicks +/− on quantity.
+   */
+  const handleUpdate = useCallback(async (id: number, quantity: number, priority: number, note?: string) => {
+    // Immediate UI update
     setEntries(prev => prev.map(e => e.id === id ? { ...e, quantity, priority, note: note ?? e.note } : e));
-  };
 
-  // #26 – drag-to-reorder handlers
+    // Cancel any pending IPC call for this entry and schedule a new one
+    const existing = updateTimers.current.get(id);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(async () => {
+      updateTimers.current.delete(id);
+      try {
+        await window.libraryAPI.updateWishlistEntry({ id, quantity, priority, note });
+      } catch (err) {
+        console.error('Failed to update wishlist entry:', err);
+        useToastStore.getState().push({ type: 'error', title: 'Failed to update wishlist', message: String(err) });
+      }
+    }, 300);
+    updateTimers.current.set(id, timer);
+  }, []);
+
+  // Drag-to-reorder handlers
   const handleDragStart = useCallback((id: number) => { dragIdRef.current = id; }, []);
   const handleDragOver = useCallback((e: React.DragEvent, id: number) => {
     e.preventDefault();
@@ -166,6 +225,8 @@ export function Wishlist() {
       if (fi === -1 || ti === -1) return prev;
       const [item] = arr.splice(fi, 1);
       arr.splice(ti, 0, item);
+      // Persist the new order to localStorage so it survives reloads
+      saveOrder(arr);
       return arr;
     });
   }, []);
@@ -184,8 +245,6 @@ export function Wishlist() {
 
   return (
     <>
-      <Header />
-
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-6">
 
@@ -196,7 +255,6 @@ export function Wishlist() {
               <p className="text-on-surface-variant text-body-md mt-1">Cards you want to acquire</p>
             </div>
             <div className="flex items-center gap-4">
-              {/* #9 – total market value */}
               {totalValue > 0 && (
                 <div className="text-right">
                   <p className="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/40">Market Value</p>
@@ -241,7 +299,7 @@ export function Wishlist() {
                     const card = cards[entry.oracle_id];
                     const name = card?.name || entry.oracle_id || 'Unknown Card';
                     const usdPrice = card?.full_data?.prices?.usd;
-                    const isOwned = collectionIds.has(entry.oracle_id); // #11
+                    const isOwned = collectionIds.has(entry.oracle_id);
                     const isEditingNote = editingNoteId === entry.id;
 
                     return (
@@ -254,7 +312,7 @@ export function Wishlist() {
                         onDragEnd={() => setDragOverId(null)}
                         className={`border-b border-white/5 transition-colors group cursor-grab active:cursor-grabbing ${dragOverId === entry.id ? 'bg-primary/5 border-primary/20' : 'hover:bg-white/[0.02]'}`}
                       >
-                        {/* Card name + owned indicator (#11) */}
+                        {/* Card name + owned indicator */}
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-2">
                             <span className="material-symbols-outlined text-[14px] text-on-surface-variant/20 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 cursor-grab">drag_indicator</span>
@@ -285,7 +343,7 @@ export function Wishlist() {
                             {[0, 1, 2, 3].map(p => <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>)}
                           </select>
                         </td>
-                        {/* Price (#9) */}
+                        {/* Price */}
                         <td className="px-5 py-3.5">
                           {usdPrice ? (
                             <div className="tabular-nums">
@@ -300,7 +358,7 @@ export function Wishlist() {
                             <span className="text-on-surface-variant/30 text-[12px]">—</span>
                           )}
                         </td>
-                        {/* Note (#5) */}
+                        {/* Note */}
                         <td className="px-5 py-3.5 max-w-[180px]">
                           {isEditingNote ? (
                             <input autoFocus value={noteVal}
@@ -322,7 +380,6 @@ export function Wishlist() {
                         {/* Actions */}
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                            {/* Add to deck (#10) */}
                             <div className="relative">
                               <button
                                 onClick={() => setAddToDeckId(addToDeckId === entry.id ? null : entry.id)}

@@ -98,8 +98,18 @@ class WidgetRegistryClass {
     return result;
   }
 
-  /** Execute widget code and return rendered HTML string.
-   *  @param instanceParams - per-instance overrides (from dataset.widgetParams) */
+  /**
+   * Execute widget code and return rendered HTML string.
+   *
+   * ⚠️  SECURITY NOTE: `new Function()` evaluates user-authored code.
+   * In Electron this runs in the renderer process. Ensure the BrowserWindow
+   * is created with `contextIsolation: true` and `nodeIntegration: false`
+   * so that widget code cannot access Node.js APIs even if it tries.
+   * The rendered HTML is injected via `innerHTML`; a strict CSP further
+   * limits what that HTML can do (no inline scripts, no external fetches).
+   *
+   * @param instanceParams - per-instance overrides (from dataset.widgetParams)
+   */
   render(id: string, data: WidgetData, instanceParams?: WidgetParams): string {
     const def = this.defs.get(id);
     if (!def) return `<p style="color:rgba(255,255,255,0.25);font-size:11px;padding:8px;text-align:center">Widget "${id}" not found</p>`;

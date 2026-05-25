@@ -6,14 +6,23 @@ const SYNC_TOAST_ID = 'kf-sync';
 
 interface SyncState {
   isSyncing: boolean;
+  /** Current sync phase label (e.g. "Downloading", "Parsing"). Empty when idle. */
+  phase: string;
+  /** 0–100 progress percentage. 0 when idle or indeterminate. */
+  progress: number;
+  /** Human-readable detail string (card count, message). Empty when idle. */
+  detail: string;
   startSync: (refresh?: boolean) => void;
 }
 
 export const useSyncStore = create<SyncState>((set) => ({
   isSyncing: false,
+  phase: '',
+  progress: 0,
+  detail: '',
 
   startSync: (refresh = false) => {
-    set({ isSyncing: true });
+    set({ isSyncing: true, phase: 'Starting…', progress: 0, detail: '' });
 
     const { push, update, dismiss } = useToastStore.getState();
 
@@ -38,13 +47,13 @@ export const useSyncStore = create<SyncState>((set) => ({
 
       if (phase === 'done' || phase === 'error') {
         if (typeof unsubscribe === 'function') unsubscribe();
-        set({ isSyncing: false });
 
         if (phase === 'done') {
           try {
             window.settingsAPI?.set({ lastSyncedAt: new Date().toISOString() });
           } catch { /* ignore */ }
 
+          set({ isSyncing: false, phase: 'Done', progress: 100, detail });
           update(SYNC_TOAST_ID, {
             type: 'success',
             title: 'Sync Complete!',
@@ -53,11 +62,15 @@ export const useSyncStore = create<SyncState>((set) => ({
             spinIcon: false,
             progress: 100,
             dismissible: true,
-            duration: 4000,
+            // duration intentionally omitted — the explicit setTimeout below is the only dismiss path
           });
-          // Auto-dismiss after 4 s
-          setTimeout(() => dismiss(SYNC_TOAST_ID), 4000);
+          // Auto-dismiss after 4 s then clear store state
+          setTimeout(() => {
+            dismiss(SYNC_TOAST_ID);
+            set({ phase: '', progress: 0, detail: '' });
+          }, 4000);
         } else {
+          set({ isSyncing: false, phase: 'Error', progress: 0, detail });
           update(SYNC_TOAST_ID, {
             type: 'error',
             title: 'Sync Failed',
@@ -70,6 +83,7 @@ export const useSyncStore = create<SyncState>((set) => ({
         }
       } else {
         // In-progress update
+        set({ phase: phaseLabel, progress: pct, detail });
         update(SYNC_TOAST_ID, {
           title: phaseLabel,
           message: detail,

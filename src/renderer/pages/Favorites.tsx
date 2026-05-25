@@ -1,11 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useLibraryStore } from '../store/useLibraryStore';
-import { Header } from '../components/Header';
+import { useSearchStore } from '../store/useSearchStore';
 import { DeckCard } from '../components/DeckCard';
 
 export function Favorites() {
   const { decks } = useLibraryStore();
-  const [search, setSearch] = useState('');
+  const { value: search, setPlaceholder, reset } = useSearchStore();
+
+  useEffect(() => {
+    setPlaceholder('Filter favorites…');
+    return () => reset();
+  }, [setPlaceholder, reset]);
 
   const favorites = useMemo(() => {
     const faves = decks.filter(d => d.is_favorite);
@@ -16,7 +21,6 @@ export function Favorites() {
 
   return (
     <>
-      <Header searchPlaceholder="Filter favorites…" searchValue={search} onSearch={setSearch} />
       <main className="p-margin-desktop min-h-screen">
         <div className="max-w-[1400px] mx-auto space-y-8">
           <div>

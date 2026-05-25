@@ -49,13 +49,14 @@ contextBridge.exposeInMainWorld('settingsAPI', {
 });
 
 contextBridge.exposeInMainWorld('cardsAPI', {
-  getStatus:     ()     => ipcRenderer.invoke('cards:status'),
-  startSync:     (args) => ipcRenderer.send('cards:startSync', args),
-  search:        (args) => ipcRenderer.invoke('cards:search', args),
-  getCard:       (args) => ipcRenderer.invoke('cards:getCard', args),
-  getCardImages: (args) => ipcRenderer.invoke('cards:getCardImages', args),
-  getCardsBatch: (args) => ipcRenderer.invoke('cards:getCardsBatch', args),
-  onProgress:    (cb)   => {
+  getStatus:        ()     => ipcRenderer.invoke('cards:status'),
+  startSync:        (args) => ipcRenderer.send('cards:startSync', args),
+  search:           (args) => ipcRenderer.invoke('cards:search', args),
+  getCard:          (args) => ipcRenderer.invoke('cards:getCard', args),
+  getCardImages:    (args) => ipcRenderer.invoke('cards:getCardImages', args),
+  getCardsBatch:    (args) => ipcRenderer.invoke('cards:getCardsBatch', args),
+  fetchEdhrecData:  (args) => ipcRenderer.invoke('cards:fetchEdhrecData', args),
+  onProgress:       (cb)   => {
     ipcRenderer.on('cards:progress', (_e, data) => cb(data));
     return () => ipcRenderer.removeAllListeners('cards:progress');
   },

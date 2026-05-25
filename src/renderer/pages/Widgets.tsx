@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-import { Header } from '../components/Header';
+import { useState, useEffect, useMemo } from 'react';
 import { WidgetRegistry } from '../widgets/registry';
 import type { WidgetDef, WidgetData } from '../widgets/registry';
 import { WidgetEditorModal } from '../components/WidgetEditorModal';
@@ -177,10 +176,10 @@ export function Widgets() {
 
   const bump = () => setVersion(v => v + 1);
 
-  // Re-render when the editor closes (version bump from save also triggers this)
-  const allWidgets = WidgetRegistry.getAll();
-  const builtins   = allWidgets.filter(d =>  d.readonly);
-  const customs    = allWidgets.filter(d => !d.readonly);
+  // Re-derived whenever registryVersion bumps (on save/delete/initial load)
+  const allWidgets = useMemo(() => WidgetRegistry.getAll(), [registryVersion]);
+  const builtins   = useMemo(() => allWidgets.filter(d =>  d.readonly), [allWidgets]);
+  const customs    = useMemo(() => allWidgets.filter(d => !d.readonly), [allWidgets]);
 
   // Trigger initial render once settings have loaded custom widgets
   useEffect(() => { bump(); }, []);
@@ -200,7 +199,6 @@ export function Widgets() {
 
   return (
     <>
-      <Header />
       <main className="px-margin-desktop py-8 min-h-screen">
         <div className="max-w-6xl mx-auto space-y-10">
 

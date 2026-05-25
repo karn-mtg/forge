@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { Deck } from '../../types/electron';
 import { ManaSymbol } from '../ManaSymbol';
 
@@ -16,29 +17,31 @@ const COLOR_CONFIG = [
 const C = 99.9; // circumference for r=15.9
 
 export function ColorDonut({ decks }: ColorDonutProps) {
-  const colorCount: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0 };
-  let total = 0;
+  const segments = useMemo(() => {
+    const colorCount: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0 };
+    let total = 0;
 
-  for (const deck of decks) {
-    const ci = deck.color_identity || '';
-    for (const c of ci.toUpperCase().split('')) {
-      if (colorCount[c] !== undefined) { colorCount[c]++; total++; }
+    for (const deck of decks) {
+      const ci = deck.color_identity || '';
+      for (const c of ci.toUpperCase().split('')) {
+        if (colorCount[c] !== undefined) { colorCount[c]++; total++; }
+      }
     }
-  }
 
-  const pct: Record<string, number> = {};
-  for (const c of Object.keys(colorCount)) {
-    pct[c] = total > 0 ? Math.round(colorCount[c] / total * 100) : 0;
-  }
+    const pct: Record<string, number> = {};
+    for (const c of Object.keys(colorCount)) {
+      pct[c] = total > 0 ? Math.round(colorCount[c] / total * 100) : 0;
+    }
 
-  let offset = 0;
-  const segments = COLOR_CONFIG.map(({ key, stroke, label }) => {
-    const p = pct[key] || 0;
-    const dash = (p / 100) * C;
-    const seg = { key, stroke, label, p, dash, offset };
-    offset += dash;
-    return seg;
-  });
+    let offset = 0;
+    return COLOR_CONFIG.map(({ key, stroke, label }) => {
+      const p = pct[key] || 0;
+      const dash = (p / 100) * C;
+      const seg = { key, stroke, label, p, dash, offset };
+      offset += dash;
+      return seg;
+    });
+  }, [decks]);
 
   return (
     <div className="bg-surface border border-white/5 rounded-2xl p-6 flex-1 shadow-xl">

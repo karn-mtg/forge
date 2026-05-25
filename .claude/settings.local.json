@@ -46,7 +46,10 @@
       "WebFetch(domain:mana.andrewgioia.com)",
       "Bash(wsl -e md5sum \"/mnt/c/Users/GuiDi/workspace/karnforge/src/renderer/pages/DeckView.tsx\")",
       "Bash(certutil -hashfile \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\src\\\\renderer\\\\pages\\\\DeckView.tsx\" MD5)",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "Bash(node -e \"const { marked, Marked } = require\\('marked'\\); console.log\\(typeof marked.parse, typeof Marked\\); const m = new Marked\\({ breaks: true, gfm: true }\\); const r = m.parse\\('# Hello'\\); console.log\\(typeof r, r\\);\")",
+      "Bash(node -e \"const { marked } = require\\('marked'\\); const r = marked.parse\\('# Hello', { breaks: true, gfm: true }\\); console.log\\(typeof r, JSON.stringify\\(r\\)\\);\")",
+      "Bash(node -e \"const { marked } = require\\('marked'\\); console.log\\(marked.parse\\('# Hello\\\\n**bold** and _italic_\\\\n- item 1\\\\n- item 2', { breaks: true, gfm: true }\\)\\);\")"
     ]
   }
 }

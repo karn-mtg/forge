@@ -32,6 +32,8 @@ function createWindow() {
   const isDev = process.env.NODE_ENV === 'development';
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173');
+    // Open DevTools automatically in dev so renderer errors are always visible
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'renderer', 'index.html'));
   }
