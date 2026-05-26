@@ -1,9 +1,9 @@
+/* Mana font — MTG mana/card symbols */
+@import 'mana-font/css/mana.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* Mana font — MTG mana/card symbols */
-@import 'mana-font/css/mana.css';
 
 /* -webkit-app-region helpers for frameless window */
 .titlebar-drag  { -webkit-app-region: drag; }

@@ -9,6 +9,7 @@ import { NewDeckModal } from '../components/NewDeckModal';
 import { ActivityChart } from '../components/charts/ActivityChart';
 import { ColorDonut } from '../components/charts/ColorDonut';
 import { PowerGauge } from '../components/charts/PowerGauge';
+import { PageHeader } from '../components/PageHeader';
 
 export function Dashboard() {
   const { decks } = useLibraryStore();
@@ -28,8 +29,9 @@ export function Dashboard() {
   const displayed = useFilteredDecks(decks, { search, formatFilter, sortBy, limit: 8 });
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader icon="dashboard" title="Dashboard" iconFill />
+      <main className="flex-1 overflow-auto p-margin-desktop">
         <div className="max-w-[1400px] mx-auto space-y-12">
 
           {/* Overview metrics */}
@@ -118,6 +120,6 @@ export function Dashboard() {
       </main>
 
       <NewDeckModal isOpen={newDeckOpen} onClose={() => setNewDeckOpen(false)} />
-    </>
+    </div>
   );
 }

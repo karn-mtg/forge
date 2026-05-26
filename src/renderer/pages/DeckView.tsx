@@ -116,6 +116,7 @@ function buildWidgetDataFromState(
       colorIdentity: Array.isArray(ci) ? ci
         : typeof ci === 'string' && ci ? ci.split('').filter(c => 'WUBRG'.includes(c))
         : [],
+      edhrecRank: det?.full_data?.edhrec_rank as number | undefined,
     };
   };
   const mainCards = deckCards.filter(dc => dc.board !== 'sideboard').map(mapCard);
@@ -736,6 +737,8 @@ export function DeckView() {
         ? JSON.parse(el.dataset.widgetParams) as Record<string, number | string | boolean>
         : undefined;
       renderWidgetBody(el, defId, data, instanceParams);
+      // Note: widget-embedded badges are refreshed by refreshAllWidgetDecorators()
+      // which is called in the same useEffect that calls refreshAllWidgets().
     });
   }, []);
   const serializeCanvas = useCallback(() => {
@@ -947,47 +950,51 @@ export function DeckView() {
       if (parentGroup) {
         // Don't stopPropagation — let makeCardClickable fire on the same card.
         const startX = e.clientX, startY = e.clientY;
-        const slotSibling = el.nextSibling; // save DOM position for same-group restore
 
         function onGroupMove(me: MouseEvent) {
           if (Math.hypot(me.clientX - startX, me.clientY - startY) <= 8) return;
           document.removeEventListener('mousemove', onGroupMove);
           document.removeEventListener('mouseup', onGroupUp);
 
-          // Ghost: clone card, place on canvas at card's screen position
-          const ghost = el.cloneNode(true) as HTMLDivElement;
-          ghost.dataset.dragGhost    = 'true';
-          ghost.dataset.ghostOracleId = el.dataset.oracleId || '';
-          ghost.querySelectorAll('button,input,textarea').forEach(n => n.remove());
-
+          // Snapshot the card's screen rect BEFORE any DOM change
           const cr  = el.getBoundingClientRect();
           const wvr = viewportRef.current!.getBoundingClientRect();
           const left = (cr.left - wvr.left - txRef.current) / scRef.current;
           const top  = (cr.top  - wvr.top  - tyRef.current) / scRef.current;
 
-          ghost.style.cssText =
+          // Insert an invisible slot placeholder that holds the card's exact DOM
+          // position. This is the source of truth for "same-group" detection and
+          // for restoring the card's position if dropped back.
+          const slot = document.createElement('div');
+          slot.dataset.ghostSlot = 'true';
+          slot.style.cssText =
+            `width:${el.offsetWidth}px;height:${el.offsetHeight}px;` +
+            `flex-shrink:0;pointer-events:none;opacity:0;`;
+          el.parentElement!.insertBefore(slot, el);
+
+          // Detach card from group and promote to canvas as the draggable ghost.
+          // The card itself becomes the ghost (no clone) so all listeners are intact.
+          el.remove();
+          el.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
+            .forEach(l => l.style.display = 'none');
+          el.classList.add('canvas-item');
+          el.dataset.baseZ = '500';
+          el.style.cssText =
             `position:absolute;left:${left}px;top:${top}px;z-index:500;cursor:grabbing;` +
             `filter:drop-shadow(0 20px 48px rgba(0,0,0,.9));transform:scale(1.04);opacity:0.92;`;
-          ghost.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
-            .forEach(l => l.style.display = 'none');
-          canvasRef.current!.appendChild(ghost);
+          canvasRef.current!.appendChild(el);
 
-          // Original stays in group as an invisible slot placeholder
-          el.style.opacity = '0';
-          el.style.pointerEvents = 'none';
-
-          // Attach slot info to the ghost for onMouseUp to retrieve
-          (ghost as any)._originalCard = el;
-          (ghost as any)._slotSibling  = slotSibling;
+          // Store the slot reference on the element so mouseUp can find it
+          (el as any)._ghostSlot = slot;
 
           const cp = s2c(me.clientX, me.clientY);
           dragRef.current = {
             type: 'single',
-            el: ghost,
+            el,
             elType: 'card-ghost',
             ox: cp.x - left,
             oy: cp.y - top,
-            sourceGroupEl: parentGroup,
+            sourceGroupEl: parentGroup!,
           };
         }
 
@@ -1097,6 +1104,99 @@ export function DeckView() {
     scheduleAutoSave();
   }, [s2c, makeItemDraggable, clearSel, selectEl, syncSelCount, makeCardClickable, attachContextMenu, scheduleAutoSave]);
 
+  // ── Card badge / overlay helpers (declared early so spawnWidgetOnCanvas can depend on them) ──
+
+  /** Build OverlayCardData for a given oracleId from current card refs. */
+  const buildOverlayCardData = useCallback((oracleId: string): OverlayCardData => {
+    const det = cardDetailsRef.current[oracleId];
+    const ci = det?.color_identity;
+    return {
+      oracleId,
+      name: det?.name || oracleId,
+      typeLine: det?.type_line || '',
+      manaCost: det?.mana_cost || '',
+      cmc: det?.cmc || 0,
+      colorIdentity: Array.isArray(ci) ? (ci as string[])
+        : typeof ci === 'string' && ci ? (ci as string).split('').filter((c: string) => 'WUBRG'.includes(c))
+        : [],
+      edhrecRank: det?.full_data?.edhrec_rank,
+    };
+  }, []);
+
+  /**
+   * Apply (or remove) card badges controlled by a widget that has `def.decorator`.
+   * Reads `show_badges` from the widget's current params; removes all existing
+   * badges for this widget's defId first, then re-renders if enabled.
+   */
+  const applyWidgetDecorators = useCallback((widgetEl: HTMLDivElement) => {
+    const defId = widgetEl.dataset.widgetDefId;
+    if (!defId) return;
+    const def = WidgetRegistry.get(defId);
+    if (!def?.decorator) return;
+
+    const cv = canvasRef.current;
+    if (!cv) return;
+
+    const instanceParams = widgetEl.dataset.widgetParams
+      ? JSON.parse(widgetEl.dataset.widgetParams) as Record<string, number | string | boolean>
+      : {};
+    const resolved = WidgetRegistry.resolveParams(def, instanceParams);
+
+    // Clean up previous badges from this widget
+    cv.querySelectorAll(`[data-widget-badge="${CSS.escape(defId)}"]`).forEach(b => b.remove());
+
+    if (!resolved['show_badges']) return;
+
+    const cardEls = Array.from(cv.querySelectorAll<HTMLDivElement>('[data-oracle-id]'));
+    const cardDataList: OverlayCardData[] = cardEls.map(el => buildOverlayCardData(el.dataset.oracleId!));
+
+    // Sync render — immediate from local DB data
+    cardEls.forEach((el, i) => {
+      try {
+        // eslint-disable-next-line no-new-func
+        const fn = new Function('card', 'params', def.decorator!.code) as (c: OverlayCardData, p: Record<string, number | string | boolean>) => string;
+        const html = fn(cardDataList[i], resolved as Record<string, number | string | boolean>);
+        if (!html) return;
+        const badge = document.createElement('div');
+        badge.setAttribute('data-widget-badge', defId);
+        badge.style.cssText = overlayWrapperCss(def.decorator!.anchor);
+        badge.innerHTML = html;
+        el.appendChild(badge);
+      } catch { /* ignore render errors */ }
+    });
+
+    // Async enrichment (e.g. EDHREC % from network)
+    if (def.decorator.asyncLoad) {
+      def.decorator.asyncLoad(cardDataList).then((enriched: Map<string, Partial<OverlayCardData>>) => {
+        enriched.forEach((partial, oracleId) => {
+          const cardEl = cv.querySelector<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oracleId)}"]`);
+          if (!cardEl) return;
+          cardEl.querySelector(`[data-widget-badge="${CSS.escape(defId)}"]`)?.remove();
+          const enrichedCard = { ...buildOverlayCardData(oracleId), ...partial };
+          try {
+            // eslint-disable-next-line no-new-func
+            const fn = new Function('card', 'params', def.decorator!.code) as (c: OverlayCardData, p: Record<string, number | string | boolean>) => string;
+            const html = fn(enrichedCard, resolved as Record<string, number | string | boolean>);
+            if (!html) return;
+            const badge = document.createElement('div');
+            badge.setAttribute('data-widget-badge', defId);
+            badge.style.cssText = overlayWrapperCss(def.decorator!.anchor);
+            badge.innerHTML = html;
+            cardEl.appendChild(badge);
+          } catch { /* ignore */ }
+        });
+      }).catch(() => {});
+    }
+  }, [buildOverlayCardData]);
+
+  /** Re-apply badges for every widget-with-decorator on the canvas. */
+  const refreshAllWidgetDecorators = useCallback(() => {
+    if (!canvasRef.current) return;
+    canvasRef.current.querySelectorAll<HTMLDivElement>(':scope > .canvas-widget').forEach(w => {
+      applyWidgetDecorators(w);
+    });
+  }, [applyWidgetDecorators]);
+
   const spawnWidgetOnCanvas = useCallback((defId: string) => {
     const def = WidgetRegistry.get(defId);
     // Build default instance params from the def's param definitions
@@ -1116,8 +1216,11 @@ export function DeckView() {
     const rawGrps = readCanvasGroups(canvasRef.current!);
     const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
     renderWidgetBody(el, defId, data, defaultParams);
+    applyWidgetDecorators(el);
     el.querySelector<HTMLButtonElement>('.widget-close-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
+      // Remove any card badges owned by this widget before removing the panel
+      canvasRef.current?.querySelectorAll(`[data-widget-badge="${CSS.escape(defId)}"]`).forEach(b => b.remove());
       el.remove();
       scheduleAutoSave();
     });
@@ -1132,26 +1235,9 @@ export function DeckView() {
     });
     attachResizeHandlers(el, 'widget');
     scheduleAutoSave();
-  }, [s2c, makeItemDraggable, attachResizeHandlers, scheduleAutoSave]);
+  }, [s2c, makeItemDraggable, attachResizeHandlers, scheduleAutoSave, applyWidgetDecorators]);
 
-  // ── Card Decorator helpers ─────────────────────────────────────────────────
-
-  /** Build OverlayCardData for a given oracleId from current card refs. */
-  const buildOverlayCardData = useCallback((oracleId: string): OverlayCardData => {
-    const det = cardDetailsRef.current[oracleId];
-    const ci = det?.color_identity;
-    return {
-      oracleId,
-      name: det?.name || oracleId,
-      typeLine: det?.type_line || '',
-      manaCost: det?.mana_cost || '',
-      cmc: det?.cmc || 0,
-      colorIdentity: Array.isArray(ci) ? (ci as string[])
-        : typeof ci === 'string' && ci ? (ci as string).split('').filter((c: string) => 'WUBRG'.includes(c))
-        : [],
-      edhrecRank: det?.full_data?.edhrec_rank,
-    };
-  }, []);
+  // ── Standalone decorator pill helpers ────────────────────────────────────────
 
   /** Apply (or refresh) overlays for one decorator pill onto all canvas cards. */
   const applyDecoratorOverlays = useCallback((decoratorEl: HTMLDivElement) => {
@@ -1271,12 +1357,7 @@ export function DeckView() {
         cardEl.classList.remove('canvas-item');
         cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
         cardList.appendChild(cardEl);
-        cardEl.addEventListener('mousedown', function onDown(e: MouseEvent) {
-          if (e.button !== 0) return; // ignore right-click / middle-click — don't eject
-          if ((e.target as HTMLElement).closest('button, a')) return;
-          cardEl.removeEventListener('mousedown', onDown);
-          ejectCard(cardEl, e);
-        });
+        makeItemDraggable(cardEl, 'card'); // threshold + ghost mechanic, same as live-dragged cards
         makeCardClickable(cardEl);
         attachContextMenu(cardEl);
       }
@@ -1325,8 +1406,11 @@ export function DeckView() {
       const rawGrps = readCanvasGroups(cv);
       const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
       renderWidgetBody(el, w.defId, data, w.params);
+      applyWidgetDecorators(el);
       el.querySelector<HTMLButtonElement>('.widget-close-btn')?.addEventListener('click', (evnt) => {
         evnt.stopPropagation();
+        const wDefId = el.dataset.widgetDefId || '';
+        canvasRef.current?.querySelectorAll(`[data-widget-badge="${CSS.escape(wDefId)}"]`).forEach(b => b.remove());
         el.remove();
         scheduleAutoSave();
       });
@@ -1353,7 +1437,7 @@ export function DeckView() {
       applyDecoratorOverlays(el);
       attachDecoratorHandlers(el);
     }
-  }, [applyT, ejectCard, makeItemDraggable, makeCardClickable, attachContextMenu, attachResizeHandlers, scheduleAutoSave, applyDecoratorOverlays, attachDecoratorHandlers]);
+  }, [applyT, ejectCard, makeItemDraggable, makeCardClickable, attachContextMenu, attachResizeHandlers, scheduleAutoSave, applyDecoratorOverlays, attachDecoratorHandlers, applyWidgetDecorators]);
 
   // Eject a card from its group onto the free canvas without starting a drag.
   // Used when deleting a group — cards survive, just become free items.
@@ -1651,13 +1735,12 @@ export function DeckView() {
           el!.style.filter = ''; el!.style.transform = '';
           cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => g.classList.remove('group-drop-highlight'));
 
-          // Retrieve the original card and its saved DOM slot from the ghost element
-          const originalCard  = (el as any)._originalCard  as HTMLDivElement | undefined;
-          const slotSibling   = (el as any)._slotSibling   as ChildNode | null | undefined;
+          // The slot placeholder left behind in the source group is the authoritative
+          // source of truth for same-group detection and position restoration.
+          const slot = (el as any)._ghostSlot as HTMLDivElement | undefined;
 
-          // Hit-test uses BOTH mouse position and ghost center so a drop near-but-
-          // slightly-outside the group bounding rect still registers correctly.
-          const ghostR = el!.getBoundingClientRect();
+          // Two-point hit-test: mouse cursor OR ghost centre
+          const ghostR  = el!.getBoundingClientRect();
           const ghostCx = (ghostR.left + ghostR.right)  / 2;
           const ghostCy = (ghostR.top  + ghostR.bottom) / 2;
           function ghostHitTest(g: HTMLDivElement) {
@@ -1671,52 +1754,36 @@ export function DeckView() {
           cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => {
             if (dropped || !ghostHitTest(g)) return;
             dropped = true;
-            el!.remove(); // remove ghost
 
-            if (!originalCard) return;
-            originalCard.style.opacity = '';
-            originalCard.style.pointerEvents = '';
-
-            if (g === sourceGroupEl) {
-              // ── Same group: restore card at its original DOM slot ──────────
-              // The card is still in the card-list (opacity 0). Re-insert at the
-              // exact slot it occupied so the stack order is preserved.
-              const cardList = g.querySelector<HTMLDivElement>('.card-list');
-              if (cardList) {
-                if (slotSibling && cardList.contains(slotSibling)) {
-                  cardList.insertBefore(originalCard, slotSibling);
-                }
-                // else: card is already at the right position (it never moved in the DOM)
-              }
+            if (slot && g.contains(slot)) {
+              // ── Same group: restore card at the slot's exact DOM position ──
+              // Insert card before slot (preserves original order), then remove slot.
+              el!.style.cssText = ''; el!.style.cursor = 'grab';
+              el!.classList.remove('canvas-item');
+              el!.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
+                .forEach(l => l.style.display = '');
+              slot.parentElement!.insertBefore(el!, slot);
+              slot.remove();
               relayoutGroup(g);
             } else {
-              // ── Different group ───────────────────────────────────────────
-              originalCard.remove();
+              // ── Different group: slot stays for a moment, then removed ────
+              slot?.remove();
               if (sourceGroupEl) relayoutGroup(sourceGroupEl);
-              dropIntoGroup(originalCard, g);
+              dropIntoGroup(el!, g); // card is on canvas → dropIntoGroup handles it
             }
           });
 
           if (!dropped) {
-            // ── Canvas drop: place original at ghost's final canvas position ──
-            const ghostLeft = parseFloat(el!.style.left);
-            const ghostTop  = parseFloat(el!.style.top);
-            el!.remove();
-            if (originalCard && sourceGroupEl) {
-              originalCard.remove();
-              relayoutGroup(sourceGroupEl);
-              originalCard.style.opacity = '';
-              originalCard.style.pointerEvents = '';
-              originalCard.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
-                .forEach(l => l.style.display = 'none');
-              originalCard.style.cssText =
-                `position:absolute;left:${ghostLeft}px;top:${ghostTop}px;z-index:20;cursor:grab;`;
-              originalCard.dataset.baseZ = '20';
-              originalCard.classList.add('canvas-item');
-              cv.appendChild(originalCard);
-              // makeItemDraggable / makeCardClickable / attachContextMenu listeners
-              // are still on originalCard from when it was first spawned on canvas.
-            }
+            // ── Canvas drop: card stays on canvas at ghost's final position ──
+            slot?.remove();
+            if (sourceGroupEl) relayoutGroup(sourceGroupEl);
+            // Card is already on the canvas — just clean up ghost styling
+            el!.style.opacity = '';
+            el!.style.filter  = '';
+            el!.style.transform = '';
+            el!.style.cursor  = 'grab';
+            el!.style.zIndex  = '20';
+            el!.dataset.baseZ = '20';
           }
         }
       }
@@ -2270,11 +2337,12 @@ export function DeckView() {
     const data = buildWidgetDataFromState(deckCards, cardDetails, rawGrps);
     refreshAllWidgets(data);
   }, [deckCards, cardDetails, refreshAllWidgets]);
-  // Refresh all decorator overlays whenever deck card data changes
+  // Refresh all decorator overlays (standalone pills + widget-embedded badges) whenever deck card data changes
   useEffect(() => {
     if (!canvasRef.current || !deckCards.length) return;
     refreshAllDecoratorOverlays();
-  }, [deckCards, cardDetails, refreshAllDecoratorOverlays]);
+    refreshAllWidgetDecorators();
+  }, [deckCards, cardDetails, refreshAllDecoratorOverlays, refreshAllWidgetDecorators]);
   const totalCards = deckCards.reduce((s, c) => s + (c.quantity || 1), 0);
 
   // ── List view data ────────────────────────────────────────────────────────
@@ -2690,10 +2758,11 @@ export function DeckView() {
                 const next = { ...widgetParamPopover.currentParams, [key]: val };
                 widgetParamPopover.el.dataset.widgetParams = JSON.stringify(next);
                 // Re-render the widget body live
-                const body = widgetParamPopover.el.querySelector<HTMLDivElement>('.widget-body');
                 const rawGrps = canvasRef.current ? readCanvasGroups(canvasRef.current) : [];
                 const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
                 renderWidgetBody(widgetParamPopover.el, widgetParamPopover.defId, data, next);
+                // Re-apply card badges — handles show_badges toggle and badge_mode changes instantly
+                applyWidgetDecorators(widgetParamPopover.el);
                 setWidgetParamPopover(p => p ? { ...p, currentParams: next } : null);
                 scheduleAutoSave();
               };

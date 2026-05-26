@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSyncStore } from '../store/useSyncStore';
+import { PageHeader } from '../components/PageHeader';
 
 export function Settings() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -38,13 +39,10 @@ export function Settings() {
   };
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader icon="settings" title="Settings" />
+      <main className="flex-1 overflow-auto p-margin-desktop">
         <div className="max-w-2xl mx-auto space-y-8">
-          <div>
-            <h2 className="font-headline-lg text-2xl text-on-surface">Settings</h2>
-            <p className="text-on-surface-variant text-body-md mt-1">App preferences and configuration</p>
-          </div>
 
           {isLoading ? (
             <div className="flex items-center justify-center py-24">
@@ -171,6 +169,6 @@ export function Settings() {
           )}
         </div>
       </main>
-    </>
+    </div>
   );
 }

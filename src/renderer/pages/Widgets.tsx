@@ -3,54 +3,55 @@ import { WidgetRegistry } from '../widgets/registry';
 import type { WidgetDef, WidgetData } from '../widgets/registry';
 import { WidgetEditorModal } from '../components/WidgetEditorModal';
 import { persistCustomWidgets } from '../App';
+import { PageHeader } from '../components/PageHeader';
 
 // ─── Realistic Commander deck mock data ───────────────────────────────────────
 // 100-card Atraxa Superfriends used for all previews on this page.
 const MOCK_DATA: WidgetData = (() => {
   const cards: WidgetData['cards'] = [
     // Commander
-    { oracleId: 'atraxa',        name: 'Atraxa, Praetors\' Voice', qty: 1, board: 'commander', typeLine: 'Legendary Creature — Phyrexian Angel Horror', manaCost: '{G}{W}{U}{B}', cmc: 4, colorIdentity: ['W','U','B','G'] },
+    { oracleId: 'atraxa',        name: 'Atraxa, Praetors\' Voice', qty: 1, board: 'commander', typeLine: 'Legendary Creature — Phyrexian Angel Horror', manaCost: '{G}{W}{U}{B}', cmc: 4, colorIdentity: ['W','U','B','G'], edhrecRank: 12 },
     // Planeswalkers
-    { oracleId: 'pw-teferi',     name: 'Teferi, Hero of Dominaria',   qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Teferi',   manaCost: '{3}{W}{U}', cmc: 5, colorIdentity: ['W','U'] },
-    { oracleId: 'pw-jace',       name: 'Jace, the Mind Sculptor',     qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Jace',     manaCost: '{2}{U}{U}', cmc: 4, colorIdentity: ['U'] },
-    { oracleId: 'pw-liliana',    name: 'Liliana of the Veil',         qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Liliana',  manaCost: '{1}{B}{B}', cmc: 3, colorIdentity: ['B'] },
-    { oracleId: 'pw-garruk',     name: 'Garruk Wildspeaker',          qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Garruk',   manaCost: '{2}{G}{G}', cmc: 4, colorIdentity: ['G'] },
-    { oracleId: 'pw-elspeth',    name: 'Elspeth, Sun\'s Champion',    qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Elspeth',  manaCost: '{4}{W}{W}', cmc: 6, colorIdentity: ['W'] },
-    { oracleId: 'pw-nissa',      name: 'Nissa, Who Shakes the World', qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Nissa',    manaCost: '{3}{G}{G}', cmc: 5, colorIdentity: ['G'] },
-    { oracleId: 'pw-ugin',       name: 'Ugin, the Spirit Dragon',     qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Ugin',     manaCost: '{8}',       cmc: 8, colorIdentity: [] },
+    { oracleId: 'pw-teferi',     name: 'Teferi, Hero of Dominaria',   qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Teferi',   manaCost: '{3}{W}{U}', cmc: 5, colorIdentity: ['W','U'], edhrecRank: 540 },
+    { oracleId: 'pw-jace',       name: 'Jace, the Mind Sculptor',     qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Jace',     manaCost: '{2}{U}{U}', cmc: 4, colorIdentity: ['U'],     edhrecRank: 820 },
+    { oracleId: 'pw-liliana',    name: 'Liliana of the Veil',         qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Liliana',  manaCost: '{1}{B}{B}', cmc: 3, colorIdentity: ['B'],     edhrecRank: 1240 },
+    { oracleId: 'pw-garruk',     name: 'Garruk Wildspeaker',          qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Garruk',   manaCost: '{2}{G}{G}', cmc: 4, colorIdentity: ['G'],     edhrecRank: 3100 },
+    { oracleId: 'pw-elspeth',    name: 'Elspeth, Sun\'s Champion',    qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Elspeth',  manaCost: '{4}{W}{W}', cmc: 6, colorIdentity: ['W'],     edhrecRank: 2800 },
+    { oracleId: 'pw-nissa',      name: 'Nissa, Who Shakes the World', qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Nissa',    manaCost: '{3}{G}{G}', cmc: 5, colorIdentity: ['G'],     edhrecRank: 980 },
+    { oracleId: 'pw-ugin',       name: 'Ugin, the Spirit Dragon',     qty: 1, board: 'main', typeLine: 'Legendary Planeswalker — Ugin',     manaCost: '{8}',       cmc: 8, colorIdentity: [],         edhrecRank: 210 },
     // Creatures
-    { oracleId: 'c-bird',        name: 'Birds of Paradise',      qty: 1, board: 'main', typeLine: 'Creature — Bird',             manaCost: '{G}',       cmc: 1, colorIdentity: ['G'] },
-    { oracleId: 'c-llanowar',    name: 'Llanowar Elves',         qty: 1, board: 'main', typeLine: 'Creature — Elf Druid',        manaCost: '{G}',       cmc: 1, colorIdentity: ['G'] },
-    { oracleId: 'c-arbor',       name: 'Arbor Elf',              qty: 1, board: 'main', typeLine: 'Creature — Elf Druid',        manaCost: '{G}',       cmc: 1, colorIdentity: ['G'] },
-    { oracleId: 'c-thalia',      name: 'Thalia, Guardian of Thraben', qty: 1, board: 'main', typeLine: 'Legendary Creature — Human Soldier', manaCost: '{1}{W}', cmc: 2, colorIdentity: ['W'] },
-    { oracleId: 'c-tefrel',      name: 'Eternal Witness',        qty: 1, board: 'main', typeLine: 'Creature — Human Shaman',     manaCost: '{1}{G}{G}', cmc: 3, colorIdentity: ['G'] },
-    { oracleId: 'c-oracle',      name: 'Sylvan Library',         qty: 1, board: 'main', typeLine: 'Enchantment',                 manaCost: '{1}{G}',    cmc: 2, colorIdentity: ['G'] },
-    { oracleId: 'c-trophy',      name: 'Deepglow Skate',         qty: 1, board: 'main', typeLine: 'Creature — Fish',             manaCost: '{4}{U}',    cmc: 5, colorIdentity: ['U'] },
-    { oracleId: 'c-sphinx',      name: 'Sphinx of the Second Sun', qty: 1, board: 'main', typeLine: 'Creature — Sphinx',         manaCost: '{5}{W}{W}', cmc: 7, colorIdentity: ['W'] },
+    { oracleId: 'c-bird',        name: 'Birds of Paradise',      qty: 1, board: 'main', typeLine: 'Creature — Bird',             manaCost: '{G}',       cmc: 1, colorIdentity: ['G'], edhrecRank: 88 },
+    { oracleId: 'c-llanowar',    name: 'Llanowar Elves',         qty: 1, board: 'main', typeLine: 'Creature — Elf Druid',        manaCost: '{G}',       cmc: 1, colorIdentity: ['G'], edhrecRank: 155 },
+    { oracleId: 'c-arbor',       name: 'Arbor Elf',              qty: 1, board: 'main', typeLine: 'Creature — Elf Druid',        manaCost: '{G}',       cmc: 1, colorIdentity: ['G'], edhrecRank: 4200 },
+    { oracleId: 'c-thalia',      name: 'Thalia, Guardian of Thraben', qty: 1, board: 'main', typeLine: 'Legendary Creature — Human Soldier', manaCost: '{1}{W}', cmc: 2, colorIdentity: ['W'], edhrecRank: 6700 },
+    { oracleId: 'c-tefrel',      name: 'Eternal Witness',        qty: 1, board: 'main', typeLine: 'Creature — Human Shaman',     manaCost: '{1}{G}{G}', cmc: 3, colorIdentity: ['G'], edhrecRank: 44 },
+    { oracleId: 'c-oracle',      name: 'Sylvan Library',         qty: 1, board: 'main', typeLine: 'Enchantment',                 manaCost: '{1}{G}',    cmc: 2, colorIdentity: ['G'], edhrecRank: 31 },
+    { oracleId: 'c-trophy',      name: 'Deepglow Skate',         qty: 1, board: 'main', typeLine: 'Creature — Fish',             manaCost: '{4}{U}',    cmc: 5, colorIdentity: ['U'], edhrecRank: 1850 },
+    { oracleId: 'c-sphinx',      name: 'Sphinx of the Second Sun', qty: 1, board: 'main', typeLine: 'Creature — Sphinx',         manaCost: '{5}{W}{W}', cmc: 7, colorIdentity: ['W'], edhrecRank: 12400 },
     // Instants
-    { oracleId: 'i-counterspell',name: 'Counterspell',           qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{U}{U}',    cmc: 2, colorIdentity: ['U'] },
-    { oracleId: 'i-path',        name: 'Path to Exile',          qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{W}',       cmc: 1, colorIdentity: ['W'] },
-    { oracleId: 'i-swords',      name: 'Swords to Plowshares',   qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{W}',       cmc: 1, colorIdentity: ['W'] },
-    { oracleId: 'i-swan',        name: 'Swan Song',              qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{U}',       cmc: 1, colorIdentity: ['U'] },
-    { oracleId: 'i-fow',         name: 'Force of Will',          qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{3}{U}{U}', cmc: 5, colorIdentity: ['U'] },
-    { oracleId: 'i-krosan',      name: 'Krosan Grip',            qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'] },
+    { oracleId: 'i-counterspell',name: 'Counterspell',           qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{U}{U}',    cmc: 2, colorIdentity: ['U'], edhrecRank: 19 },
+    { oracleId: 'i-path',        name: 'Path to Exile',          qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{W}',       cmc: 1, colorIdentity: ['W'], edhrecRank: 63 },
+    { oracleId: 'i-swords',      name: 'Swords to Plowshares',   qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{W}',       cmc: 1, colorIdentity: ['W'], edhrecRank: 26 },
+    { oracleId: 'i-swan',        name: 'Swan Song',              qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{U}',       cmc: 1, colorIdentity: ['U'], edhrecRank: 370 },
+    { oracleId: 'i-fow',         name: 'Force of Will',          qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{3}{U}{U}', cmc: 5, colorIdentity: ['U'], edhrecRank: 7900 },
+    { oracleId: 'i-krosan',      name: 'Krosan Grip',            qty: 1, board: 'main', typeLine: 'Instant',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'], edhrecRank: 430 },
     // Sorceries
-    { oracleId: 's-demonic',     name: 'Demonic Tutor',          qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{1}{B}',    cmc: 2, colorIdentity: ['B'] },
-    { oracleId: 's-wrath',       name: 'Wrath of God',           qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{W}{W}', cmc: 4, colorIdentity: ['W'] },
-    { oracleId: 's-cultivate',   name: 'Cultivate',              qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'] },
-    { oracleId: 's-kodama',      name: 'Kodama\'s Reach',        qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'] },
-    { oracleId: 's-ponder',      name: 'Ponder',                 qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{U}',       cmc: 1, colorIdentity: ['U'] },
+    { oracleId: 's-demonic',     name: 'Demonic Tutor',          qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{1}{B}',    cmc: 2, colorIdentity: ['B'], edhrecRank: 4 },
+    { oracleId: 's-wrath',       name: 'Wrath of God',           qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{W}{W}', cmc: 4, colorIdentity: ['W'], edhrecRank: 95 },
+    { oracleId: 's-cultivate',   name: 'Cultivate',              qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'], edhrecRank: 7 },
+    { oracleId: 's-kodama',      name: 'Kodama\'s Reach',        qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{2}{G}',    cmc: 3, colorIdentity: ['G'], edhrecRank: 15 },
+    { oracleId: 's-ponder',      name: 'Ponder',                 qty: 1, board: 'main', typeLine: 'Sorcery',                    manaCost: '{U}',       cmc: 1, colorIdentity: ['U'], edhrecRank: 620 },
     // Enchantments
-    { oracleId: 'e-rhystic',     name: 'Rhystic Study',          qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{2}{U}',    cmc: 3, colorIdentity: ['U'] },
-    { oracleId: 'e-mystic',      name: 'Mystic Remora',          qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{U}',       cmc: 1, colorIdentity: ['U'] },
-    { oracleId: 'e-propaganda',  name: 'Propaganda',             qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{2}{U}',    cmc: 3, colorIdentity: ['U'] },
-    { oracleId: 'e-doubling',    name: 'Doubling Season',        qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{4}{G}',    cmc: 5, colorIdentity: ['G'] },
+    { oracleId: 'e-rhystic',     name: 'Rhystic Study',          qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{2}{U}',    cmc: 3, colorIdentity: ['U'], edhrecRank: 1 },
+    { oracleId: 'e-mystic',      name: 'Mystic Remora',          qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{U}',       cmc: 1, colorIdentity: ['U'], edhrecRank: 38 },
+    { oracleId: 'e-propaganda',  name: 'Propaganda',             qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{2}{U}',    cmc: 3, colorIdentity: ['U'], edhrecRank: 290 },
+    { oracleId: 'e-doubling',    name: 'Doubling Season',        qty: 1, board: 'main', typeLine: 'Enchantment',                manaCost: '{4}{G}',    cmc: 5, colorIdentity: ['G'], edhrecRank: 56 },
     // Artifacts
-    { oracleId: 'a-sol',         name: 'Sol Ring',               qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [] },
-    { oracleId: 'a-arcane',      name: 'Arcane Signet',          qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{2}',       cmc: 2, colorIdentity: [] },
-    { oracleId: 'a-commanders',  name: 'Commander\'s Sphere',    qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{3}',       cmc: 3, colorIdentity: [] },
-    { oracleId: 'a-amulet',      name: 'Amulet of Vigor',        qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [] },
-    { oracleId: 'a-sensei',      name: 'Sensei\'s Divining Top', qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [] },
+    { oracleId: 'a-sol',         name: 'Sol Ring',               qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [], edhrecRank: 2 },
+    { oracleId: 'a-arcane',      name: 'Arcane Signet',          qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{2}',       cmc: 2, colorIdentity: [], edhrecRank: 3 },
+    { oracleId: 'a-commanders',  name: 'Commander\'s Sphere',    qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{3}',       cmc: 3, colorIdentity: [], edhrecRank: 310 },
+    { oracleId: 'a-amulet',      name: 'Amulet of Vigor',        qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [], edhrecRank: 5800 },
+    { oracleId: 'a-sensei',      name: 'Sensei\'s Divining Top', qty: 1, board: 'main', typeLine: 'Artifact',                   manaCost: '{1}',       cmc: 1, colorIdentity: [], edhrecRank: 74 },
     // Lands (37)
     ...Array.from({ length: 4 }, (_, i) => ({
       oracleId: `land-shock-${i}`, name: ['Hallowed Fountain','Watery Grave','Overgrown Tomb','Temple Garden'][i],
@@ -131,12 +132,21 @@ function WidgetPreviewCard({
       {/* Card footer */}
       <div className="flex items-start justify-between gap-3 px-4 py-3 border-t border-white/5">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-0.5">
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
             <p className="text-[12px] font-bold text-on-surface truncate">{def.name}</p>
             {def.readonly
               ? <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-widest text-primary/35 border border-primary/15 rounded px-1 py-px">built-in</span>
               : <span className="flex-shrink-0 text-[8px] font-bold uppercase tracking-widest text-green-400/50 border border-green-400/15 rounded px-1 py-px">custom</span>
             }
+            {def.decorator && (
+              <span
+                title="This widget also shows badges on each card. Toggle with 'Show card badges' in the ⚙ params."
+                className="flex-shrink-0 flex items-center gap-0.5 text-[8px] font-bold uppercase tracking-widest text-amber-400/60 border border-amber-400/20 rounded px-1 py-px"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: 9, fontVariationSettings: "'FILL' 1" }}>layers</span>
+                badges
+              </span>
+            )}
           </div>
           {def.description && (
             <p className="text-[10px] text-on-surface-variant/45 leading-snug line-clamp-2">{def.description}</p>
@@ -198,26 +208,22 @@ export function Widgets() {
   };
 
   return (
-    <>
-      <main className="px-margin-desktop py-8 min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader
+        icon="widgets"
+        title="Widgets"
+        actions={
+          <button
+            onClick={() => { setEditorDef(null); setEditorOpen(true); }}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary font-bold text-label-md hover:bg-primary/20 transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            New Widget
+          </button>
+        }
+      />
+      <main className="flex-1 overflow-auto px-margin-desktop py-8">
         <div className="max-w-6xl mx-auto space-y-10">
-
-          {/* Page header */}
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="font-headline-lg text-2xl text-on-surface">Widgets</h2>
-              <p className="text-on-surface-variant text-body-md mt-1">
-                Data panels you can place on any deck canvas · previewed below with a sample Commander deck
-              </p>
-            </div>
-            <button
-              onClick={() => { setEditorDef(null); setEditorOpen(true); }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary/10 border border-primary/20 text-primary font-bold text-label-md hover:bg-primary/20 transition-all flex-shrink-0"
-            >
-              <span className="material-symbols-outlined text-[18px]">add</span>
-              New Widget
-            </button>
-          </div>
 
           {/* Mock deck note */}
           <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/5">
@@ -311,6 +317,6 @@ export function Widgets() {
           onSave={handleSave}
         />
       )}
-    </>
+    </div>
   );
 }

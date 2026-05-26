@@ -164,4 +164,3 @@ The design system uses a **Rounded** shape language to mirror the software aesth
 - **Chips/Badges:** Use a subtle background (10% opacity of the text color) with a slightly bolder font weight for the label.
 - **Segmented Controls:** These should resemble the macOS system toggles—a dark track with a slightly raised, lighter `#2B2E33` or `#D4AF6A` slider.
 
-\claude --resume 79b1a742-9ef6-4c7f-8e97-2c7af268bd20

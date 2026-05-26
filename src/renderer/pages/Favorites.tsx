@@ -2,6 +2,7 @@ import { useMemo, useEffect } from 'react';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useSearchStore } from '../store/useSearchStore';
 import { DeckCard } from '../components/DeckCard';
+import { PageHeader } from '../components/PageHeader';
 
 export function Favorites() {
   const { decks } = useLibraryStore();
@@ -20,13 +21,10 @@ export function Favorites() {
   }, [decks, search]);
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader icon="star" title="Favorites" iconFill />
+      <main className="flex-1 overflow-auto p-margin-desktop">
         <div className="max-w-[1400px] mx-auto space-y-8">
-          <div>
-            <h2 className="font-headline-lg text-2xl text-on-surface">Favorites</h2>
-            <p className="text-on-surface-variant text-body-md mt-1">Your starred decks</p>
-          </div>
           {favorites.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-24 gap-4">
               <span className="material-symbols-outlined text-[56px] text-on-surface-variant/15">star</span>
@@ -44,6 +42,6 @@ export function Favorites() {
           )}
         </div>
       </main>
-    </>
+    </div>
   );
 }

@@ -194,7 +194,12 @@ function updateDeck(db, { id, ...fields }) {
   if (updates.length === 0) return { ok: true };
 
   const setClauses = [...updates.map(k => `${k} = ?`), "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"];
-  const values = updates.map(k => fields[k]);
+  const values = updates.map(k => {
+    const v = fields[k];
+    if (k === 'color_identity') return Array.isArray(v) ? JSON.stringify(v) : (v ?? null);
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    return v ?? null;
+  });
   db.prepare(`UPDATE decks SET ${setClauses.join(', ')} WHERE id = ?`).run(...values, id);
   return { ok: true };
 }

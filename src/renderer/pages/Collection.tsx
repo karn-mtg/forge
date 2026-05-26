@@ -4,6 +4,7 @@ import { useSearchStore } from '../store/useSearchStore';
 import { useConfirmStore } from '../store/useConfirmStore';
 import { useToastStore } from '../store/useToastStore';
 import type { CollectionEntry, Card } from '../types/electron';
+import { PageHeader } from '../components/PageHeader';
 
 const CONDITION_STYLES: Record<string, string> = {
   NM: 'bg-green-500/10 text-green-400 border-green-500/20',
@@ -249,36 +250,34 @@ export function Collection() {
     .map(c => ({ cond: c, qty: stats.conds[c] }));
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
-        <div className="max-w-[1400px] mx-auto space-y-6">
-
-          {/* Page header */}
-          <div className="flex items-end justify-between">
-            <div>
-              <h2 className="font-headline-lg text-2xl text-on-surface">Collection</h2>
-              <p className="text-on-surface-variant text-body-md mt-1">All physical cards you own</p>
-            </div>
-            <div className="flex gap-2">
-              {entries.length > 0 && (
-                <button
-                  onClick={handleExportCSV}
-                  className="flex items-center gap-2 px-4 py-2 bg-surface-container border border-white/5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all font-bold text-label-md"
-                  title="Export collection as CSV"
-                >
-                  <span className="material-symbols-outlined text-[18px]">download</span>
-                  CSV
-                </button>
-              )}
+    <div className="flex flex-col h-full">
+      <PageHeader
+        icon="inventory_2"
+        title="Collection"
+        actions={
+          <>
+            {entries.length > 0 && (
               <button
-                onClick={() => setPanelOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
+                onClick={handleExportCSV}
+                className="flex items-center gap-2 px-4 py-2 bg-surface-container border border-white/5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all font-bold text-label-md"
+                title="Export collection as CSV"
               >
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                Add Card
+                <span className="material-symbols-outlined text-[18px]">download</span>
+                CSV
               </button>
-            </div>
-          </div>
+            )}
+            <button
+              onClick={() => setPanelOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
+            >
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              Add Card
+            </button>
+          </>
+        }
+      />
+      <main className="flex-1 overflow-auto p-margin-desktop">
+        <div className="max-w-[1400px] mx-auto space-y-6">
 
           {/* Stats summary — shows all non-empty condition buckets */}
           {!isLoading && entries.length > 0 && (
@@ -466,6 +465,6 @@ export function Collection() {
         </div>
       )}
 
-    </>
+    </div>
   );
 }

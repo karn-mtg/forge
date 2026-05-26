@@ -3,6 +3,7 @@ import { CardSearchPanel } from '../components/CardSearchPanel';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useToastStore } from '../store/useToastStore';
 import type { WishlistEntry, Card, Deck } from '../types/electron';
+import { PageHeader } from '../components/PageHeader';
 
 const PRIORITY_LABELS: Record<number, string> = { 0: 'Low', 1: 'Normal', 2: 'High', 3: 'Critical' };
 const PRIORITY_COLORS: Record<number, string> = {
@@ -244,32 +245,31 @@ export function Wishlist() {
   };
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader
+        icon="bookmark"
+        title="Wishlist"
+        iconFill
+        actions={
+          <>
+            {totalValue > 0 && (
+              <div className="text-right mr-2">
+                <p className="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/40 leading-none mb-0.5">Market Value</p>
+                <p className="font-bold text-on-surface text-sm tabular-nums">${totalValue.toFixed(2)}</p>
+              </div>
+            )}
+            <button
+              onClick={() => setPanelOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
+            >
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              Add Card
+            </button>
+          </>
+        }
+      />
+      <main className="flex-1 overflow-auto p-margin-desktop">
         <div className="max-w-[1400px] mx-auto space-y-6">
-
-          {/* Header */}
-          <div className="flex items-end justify-between">
-            <div>
-              <h2 className="font-headline-lg text-2xl text-on-surface">Wishlist</h2>
-              <p className="text-on-surface-variant text-body-md mt-1">Cards you want to acquire</p>
-            </div>
-            <div className="flex items-center gap-4">
-              {totalValue > 0 && (
-                <div className="text-right">
-                  <p className="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/40">Market Value</p>
-                  <p className="font-bold text-on-surface text-lg tabular-nums">${totalValue.toFixed(2)}</p>
-                </div>
-              )}
-              <button
-                onClick={() => setPanelOpen(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
-              >
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                Add Card
-              </button>
-            </div>
-          </div>
 
           <div className="bg-surface border border-white/5 rounded-2xl shadow-xl overflow-hidden">
             {isLoading ? (
@@ -413,6 +413,6 @@ export function Wishlist() {
       </main>
 
       <CardSearchPanel isOpen={panelOpen} onClose={() => setPanelOpen(false)} title="Add to Wishlist" onSelectCard={handleAdd} />
-    </>
+    </div>
   );
 }

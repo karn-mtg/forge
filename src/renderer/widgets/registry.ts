@@ -7,6 +7,8 @@ export interface WidgetCard {
   manaCost: string;
   cmc: number;
   colorIdentity: string[];
+  /** EDHREC rank from Scryfall bulk data (lower = more popular in Commander). Undefined if not loaded. */
+  edhrecRank?: number;
 }
 
 /** A named group from the canvas arrangement (populated from .group-container DOM elements). */
@@ -60,6 +62,28 @@ export interface WidgetDef {
   /** Configurable parameters; users can override per-instance via the gear popover. */
   params?: WidgetParam[];
   code: string;          // JS function body: receives (data: WidgetData, params: WidgetParams), must return HTML string
+  /**
+   * Optional inline card decorator.  When present this widget also renders badges
+   * on every canvas card — no separate CardDecoratorDef entry needed.
+   *
+   * • `code`       — JS function body: `(card, params) => string (HTML)`
+   *                  `card` has the same shape as OverlayCardData (oracleId, name,
+   *                  typeLine, cmc, colorIdentity, edhrecRank, edhrecPct, …).
+   * • `asyncLoad`  — optional async enrichment (e.g. EDHREC % fetch); receives the
+   *                  card list and returns a Map of oracleId → partial card data to
+   *                  merge before re-rendering.
+   * • `anchor`     — where on the card the badge is positioned.
+   *
+   * A `show_badges` boolean param (default true) is automatically recognised by
+   * the canvas framework — add it to the widget's `params` array to expose it in
+   * the gear popover so the user can toggle badges on/off from the panel.
+   */
+  decorator?: {
+    anchor: 'tl' | 'tr' | 'bl' | 'br' | 'bc' | 'tc';
+    code: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    asyncLoad?: (cards: any[]) => Promise<Map<string, any>>;
+  };
 }
 
 class WidgetRegistryClass {

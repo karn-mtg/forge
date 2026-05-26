@@ -5,6 +5,7 @@ import { useLibraryStore } from '../store/useLibraryStore';
 import { useSearchStore } from '../store/useSearchStore';
 import { useFilteredDecks } from '../hooks/useFilteredDecks';
 import type { DeckSortKey } from '../hooks/useFilteredDecks';
+import { PageHeader } from '../components/PageHeader';
 
 const FORMAT_OPTIONS = [
   { value: '', label: 'All Formats' },
@@ -35,27 +36,22 @@ export function AllDecks() {
   const hasActiveFilter = !!(search || formatFilter || favoritesOnly);
 
   return (
-    <>
-      <main className="p-margin-desktop min-h-screen">
+    <div className="flex flex-col h-full">
+      <PageHeader
+        icon="style"
+        title="My Decks"
+        actions={
+          <button
+            onClick={() => setNewDeckOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            New Deck
+          </button>
+        }
+      />
+      <main className="flex-1 overflow-auto p-margin-desktop">
         <div className="max-w-[1400px] mx-auto space-y-8">
-
-          {/* Page header */}
-          <div className="flex items-end justify-between">
-            <div>
-              <h2 className="font-headline-lg text-2xl text-on-surface">My Decks</h2>
-              <p className="text-on-surface-variant text-body-md mt-1">
-                {filtered.length} deck{filtered.length !== 1 ? 's' : ''}
-                {hasActiveFilter ? ' matching filters' : ''}
-              </p>
-            </div>
-            <button
-              onClick={() => setNewDeckOpen(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
-            >
-              <span className="material-symbols-outlined text-[18px]">add</span>
-              New Deck
-            </button>
-          </div>
 
           {/* Filters */}
           <div className="flex items-center gap-3 flex-wrap">
@@ -161,6 +157,6 @@ export function AllDecks() {
       </main>
 
       <NewDeckModal isOpen={newDeckOpen} onClose={() => setNewDeckOpen(false)} />
-    </>
+    </div>
   );
 }
