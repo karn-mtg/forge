@@ -5,6 +5,7 @@ import { Sidebar } from '../components/Sidebar';
 import { ToastStack } from '../components/ToastStack';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { CardSearchPanel } from '../components/CardSearchPanel';
+import type { CardSearchPanelHandle } from '../components/CardSearchPanel';
 import { CardDetailPanel } from '../components/CardDetailPanel';
 import { DeckSettingsModal } from '../components/DeckSettingsModal';
 import type { Deck, Card, DeckCardEntry, Arrangement } from '../types/electron';
@@ -19,6 +20,7 @@ import { overlayWrapperCss } from '../widgets/overlayRegistry';
 import { persistCustomWidgets, persistCustomDecorators } from '../App';
 import { WidgetEditorModal } from '../components/WidgetEditorModal';
 import { esc } from '../utils/escape';
+import { useAIStore } from '../store/useAIStore';
 
 // Shared marked options: GFM + soft line breaks
 const MARKED_OPTS = { breaks: true, gfm: true };
@@ -40,6 +42,43 @@ const GROUP_PRESETS = [
 ];
 
 const CATEGORY_ORDER = ['Commanders','Creatures','Instants','Sorceries','Enchantments','Artifacts','Planeswalkers','Lands','Other','Sideboard'];
+
+function QtyInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const commit = () => {
+    const n = parseInt(draft, 10);
+    if (!isNaN(n) && n > 0 && n !== value) onChange(n);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="number"
+        min={1}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+        className="w-8 text-center text-label-md font-bold text-primary bg-surface-container border border-primary/40 rounded focus:outline-none"
+        style={{ MozAppearance: 'textfield' } as React.CSSProperties}
+      />
+    );
+  }
+
+  return (
+    <span
+      className="text-label-md font-bold text-primary w-5 text-center cursor-text hover:text-primary/70 transition-colors"
+      title="Click to edit quantity"
+      onClick={() => { setDraft(String(value)); setEditing(true); }}
+    >
+      {value}
+    </span>
+  );
+}
 
 function getCategory(typeLine: string): string {
   const t = (typeLine || '').toLowerCase();
@@ -101,6 +140,7 @@ function buildWidgetDataFromState(
   deckCards: DeckCardEntry[],
   cardDetails: Record<string, Card>,
   rawGroups?: RawCanvasGroup[],
+  cardStatuses?: Record<string, string>,
 ): WidgetData {
   const mapCard = (dc: DeckCardEntry) => {
     const det = cardDetails[dc.oracle_id];
@@ -134,6 +174,7 @@ function buildWidgetDataFromState(
     allCards: deckCards.map(mapCard),
     deckSize: mainCards.reduce((s, c) => s + c.qty, 0),
     groups,
+    cardStatuses,
   };
 }
 // ─── Canvas helpers (imperative DOM) ─────────────────────────────────────────
@@ -146,6 +187,8 @@ interface CardData {
   imageUrl: string;
   qty?: number;
   board?: string; // 'main' | 'commander' | 'partner' | 'sideboard'
+  /** deck_cards.id — unique per instance, used to identify which DB row to remove. */
+  entryId?: number;
 }
 
 // ── DOM badge helpers (imperative, used outside React render) ─────────────────
@@ -189,6 +232,7 @@ function makeCardEl(data: CardData): HTMLDivElement {
   el.className = 'card-stack w-40 h-[240px] canvas-item';
   el.dataset.baseZ = '20';
   el.dataset.oracleId = data.oracleId || '';
+  if (data.entryId) el.dataset.entryId = String(data.entryId);
   el.dataset.cardJson = JSON.stringify(data);
   const imgUrl = data.imageUrl || '';
 
@@ -216,6 +260,39 @@ function makeCardEl(data: CardData): HTMLDivElement {
   }
 
   return el;
+}
+
+/**
+ * Update the image shown on an already-placed card element.
+ * Works whether the card was built with an image or just a placeholder.
+ */
+function setCardElImage(cardEl: HTMLDivElement, imageUrl: string): void {
+  // Update serialised metadata so the canvas saves the new URL
+  try {
+    const d = JSON.parse(cardEl.dataset.cardJson || '{}');
+    d.imageUrl = imageUrl;
+    cardEl.dataset.cardJson = JSON.stringify(d);
+  } catch {}
+  // Update DOM: if <img> already exists just change its src;
+  // if only a placeholder div exists, inject an <img> in front of it.
+  const existingImg = cardEl.querySelector<HTMLImageElement>('img');
+  if (existingImg) {
+    existingImg.src = imageUrl;
+    existingImg.style.display = '';
+    const ph = existingImg.nextElementSibling as HTMLElement | null;
+    if (ph) ph.style.display = 'none';
+  } else {
+    const layers = cardEl.querySelectorAll<HTMLDivElement>('.card-layer');
+    const contentLayer = layers[2]; // third .card-layer = the visual layer
+    if (contentLayer) {
+      contentLayer.innerHTML =
+        `<img src="${imageUrl}" loading="lazy" class="flex-1 w-full object-cover object-top"
+              onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+         <div class="flex-1 items-center justify-center" style="display:none">
+           <span class="material-symbols-outlined text-[48px] opacity-10">playing_cards</span>
+         </div>`;
+    }
+  }
 }
 
 function makeGroupEl(name: string, color: string, layoutMode = 'grid', cardsPerRow = 5, maxStack = 5): HTMLDivElement {
@@ -386,13 +463,13 @@ function makeStickerEl(text: string, initWidth?: number, initHeight?: number): H
  * The `.wbz` div holds padding and carries the designer's base width.
  * zoom = currentWidth / baseWidth, clamped to [0.45, 3].
  */
-function setWidgetBodyZoom(el: HTMLDivElement): void {
+function setWidgetBodyZoom(el: HTMLDivElement, overrideWidth?: number): void {
   if (!el.classList.contains('canvas-widget')) return;
   const body = el.querySelector<HTMLDivElement>('.widget-body');
   const inner = body?.querySelector<HTMLDivElement>('.wbz');
   if (!body || !inner) return;
   const baseWidth = parseInt(el.dataset.baseWidth || '220', 10);
-  const currentWidth = el.offsetWidth || baseWidth;
+  const currentWidth = overrideWidth ?? el.offsetWidth ?? baseWidth;
   const scale = Math.max(0.45, Math.min(3, currentWidth / baseWidth));
   inner.style.width = baseWidth + 'px';
   inner.style.zoom = String(scale);
@@ -407,12 +484,31 @@ function renderWidgetBody(
   defId: string,
   data: WidgetData,
   instanceParams?: Record<string, number | string | boolean>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  asyncData?: any,
 ): void {
   const body = el.querySelector<HTMLDivElement>('.widget-body');
   if (!body) return;
-  const html = WidgetRegistry.render(defId, data, instanceParams);
+  const html = WidgetRegistry.render(defId, data, instanceParams, asyncData);
   body.innerHTML = `<div class="wbz">${html}</div>`;
   setWidgetBodyZoom(el);
+}
+
+/** Fire-and-forget: if the widget def has asyncWidgetData, fetch it then re-render. */
+async function renderWidgetBodyAsync(
+  el: HTMLDivElement,
+  defId: string,
+  data: WidgetData,
+  instanceParams?: Record<string, number | string | boolean>,
+): Promise<void> {
+  const def = WidgetRegistry.get(defId);
+  if (!def?.asyncWidgetData) return;
+  const params = WidgetRegistry.resolveParams(def, instanceParams);
+  try {
+    const asyncData = await def.asyncWidgetData(data, params);
+    if (!el.isConnected) return; // widget was removed from canvas
+    renderWidgetBody(el, defId, data, instanceParams, asyncData);
+  } catch { /* silent — widget stays on its sync render */ }
 }
 
 function makeWidgetEl(defId: string): HTMLDivElement {
@@ -526,19 +622,22 @@ function ToolbarTooltip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-type Tab = 'workshop' | 'list';
+type Tab = 'workshop' | 'list' | 'missing' | 'simulate' | 'combos';
 
 export function DeckView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const deckId = parseInt(id || '0', 10);
   const { loadLibrary, updateDeckCardCount } = useLibraryStore();
+  const { toggle: toggleAI, isOpen: aiOpen } = useAIStore();
 
   // Deck state
   const [deck, setDeck] = useState<Deck | null>(null);
   const [deckCards, setDeckCards] = useState<DeckCardEntry[]>([]);
   const [cardDetails, setCardDetails] = useState<Record<string, Card>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [cardStatuses, setCardStatuses] = useState<Record<string, string>>({});
+  const cardStatusesRef = useRef<Record<string, string>>({});
 
   // UI state
   const [tab, setTab] = useState<Tab>('workshop');
@@ -588,6 +687,7 @@ export function DeckView() {
   // Canvas refs
   const viewportRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const searchPanelRef = useRef<CardSearchPanelHandle>(null);
 
   // Canvas transform — all managed as refs so pan/zoom never triggers React re-renders
   const txRef = useRef(80), tyRef = useRef(60), scRef = useRef(1);
@@ -604,6 +704,9 @@ export function DeckView() {
     /** Set when elType === 'card-ghost': the group the card came from */
     sourceGroupEl?: HTMLDivElement;
   } | null>(null);
+  /** Stores a select closure set on canvas-card mousedown; fired on first drag move,
+   *  cleared on mouseup if no drag occurred (plain click → no selection). */
+  const pendingSelectRef = useRef<(() => void) | null>(null);
   const panRef = useRef<{ ox: number; oy: number } | null>(null);
   const rbandRef = useRef<{ sx: number; sy: number } | null>(null);
   // Resize state — directional, separate from drag
@@ -647,6 +750,11 @@ export function DeckView() {
   useEffect(() => { deckCardsRef.current = deckCards; },   [deckCards]);
   useEffect(() => { cardDetailsRef.current = cardDetails; }, [cardDetails]);
 
+  // oracleId → user-selected image URL (overrides the oracle-default image).
+  // Persisted in canvas JSON via data-card-json.imageUrl; this ref holds the
+  // in-memory version so spawnCardOnCanvas and reconcileCanvas can use it too.
+  const preferredImagesRef = useRef<Record<string, string>>({});
+
   // ── Data loading ──────────────────────────────────────────────────────────
 
   const loadDeckData = useCallback(async () => {
@@ -668,8 +776,29 @@ export function DeckView() {
           details.forEach(c => { map[c.oracle_id] = c; });
           setCardDetails(map);
           cardDetailsRef.current = map; // sync ref immediately
+
+          // Patch canvas cards that were placed before card details loaded
+          // (arrangement restored or reconciled while details were still in-flight).
+          if (canvasRef.current) {
+            canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]').forEach(cardEl => {
+              try {
+                const d = JSON.parse(cardEl.dataset.cardJson || '{}');
+                if (!d.imageUrl && d.oracleId) {
+                  const imageUrl = preferredImagesRef.current[d.oracleId] || getImageUrl(map[d.oracleId]);
+                  if (imageUrl) setCardElImage(cardEl, imageUrl);
+                }
+              } catch {}
+            });
+          }
         } catch {}
       }
+      // Load collection status for every card in this deck
+      try {
+        const statuses = await window.libraryAPI.getDeckCardStatuses({ deckId });
+        cardStatusesRef.current = statuses;
+        setCardStatuses(statuses);
+      } catch { /* non-critical */ }
+
       // Race condition fix: if arrangements already loaded before deck data arrived,
       // the earlier reconcileCanvas() saw an empty deckCardsRef and skipped.
       // Now that fresh data is in the refs, populate the canvas.
@@ -693,7 +822,7 @@ export function DeckView() {
 
   const applyT = useCallback(() => {
     if (!canvasRef.current) return;
-    canvasRef.current.style.transform = `translate(${txRef.current}px,${tyRef.current}px) scale(${scRef.current})`;
+    canvasRef.current.style.transform = `translate3d(${txRef.current}px,${tyRef.current}px,0) scale(${scRef.current})`;
     // Fix #7: direct DOM write — no React re-render on every pan/zoom frame
     if (zoomLabelRef.current) {
       zoomLabelRef.current.textContent = Math.round(scRef.current * 100) + '%';
@@ -737,6 +866,7 @@ export function DeckView() {
         ? JSON.parse(el.dataset.widgetParams) as Record<string, number | string | boolean>
         : undefined;
       renderWidgetBody(el, defId, data, instanceParams);
+      renderWidgetBodyAsync(el, defId, data, instanceParams);
       // Note: widget-embedded badges are refreshed by refreshAllWidgetDecorators()
       // which is called in the same useEffect that calls refreshAllWidgets().
     });
@@ -948,7 +1078,10 @@ export function DeckView() {
         : null;
 
       if (parentGroup) {
-        // Don't stopPropagation — let makeCardClickable fire on the same card.
+        // stopPropagation prevents the bubble reaching the group's own drag listener
+        // (which would start moving the group immediately). makeCardClickable is also
+        // on this same element so it still fires — stopPropagation only blocks parents.
+        e.stopPropagation();
         const startX = e.clientX, startY = e.clientY;
 
         function onGroupMove(me: MouseEvent) {
@@ -972,6 +1105,11 @@ export function DeckView() {
             `flex-shrink:0;pointer-events:none;opacity:0;`;
           el.parentElement!.insertBefore(slot, el);
 
+          // Drag started — select this card (it's now a canvas item)
+          clearSel();
+          selectEl(el);
+          syncSelCount();
+
           // Detach card from group and promote to canvas as the draggable ghost.
           // The card itself becomes the ghost (no clone) so all listeners are intact.
           el.remove();
@@ -979,10 +1117,22 @@ export function DeckView() {
             .forEach(l => l.style.display = 'none');
           el.classList.add('canvas-item');
           el.dataset.baseZ = '500';
+
+          // Place at rest state first (no lift) so the transition has a starting point
           el.style.cssText =
             `position:absolute;left:${left}px;top:${top}px;z-index:500;cursor:grabbing;` +
-            `filter:drop-shadow(0 20px 48px rgba(0,0,0,.9));transform:scale(1.04);opacity:0.92;`;
+            `transform:scale(1);opacity:1;will-change:transform;` +
+            `transition:transform 0.18s cubic-bezier(0.2,0,0,1),opacity 0.18s ease;`;
           canvasRef.current!.appendChild(el);
+          canvasRef.current!.classList.add('dragging-active');
+
+          // Double-rAF: first frame commits the initial paint, second frame triggers
+          // the lift so the browser actually runs the CSS transition.
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            el.classList.add('card-lifting');
+            el.style.transform = 'scale(1.06) rotate(2deg)';
+            el.style.opacity   = '0.92';
+          }));
 
           // Store the slot reference on the element so mouseUp can find it
           (el as any)._ghostSlot = slot;
@@ -1020,24 +1170,48 @@ export function DeckView() {
           const l = parseFloat(s.style.left) || s.offsetLeft;
           const t = parseFloat(s.style.top) || s.offsetTop;
           s.style.left = l + 'px'; s.style.top = t + 'px'; s.style.zIndex = '500';
+          if (s.classList.contains('card-stack')) s.style.willChange = 'transform';
           init.set(s, { l, t });
         });
+        canvasRef.current?.classList.add('dragging-active');
         dragRef.current = { type: 'multi', ox: cp.x, oy: cp.y, init };
       } else {
-        if (!e.shiftKey) clearSel();
-        selectEl(el);
-        syncSelCount();
         const left = parseFloat(el.style.left) || el.offsetLeft;
         const top = parseFloat(el.style.top) || el.offsetTop;
         el.style.left = left + 'px'; el.style.top = top + 'px';
         const cp = s2c(e.clientX, e.clientY);
         dragRef.current = { type: 'single', el, elType, ox: cp.x - left, oy: cp.y - top };
+
+        if (e.shiftKey) {
+          // Shift+click: add to selection immediately (enables multi-drag on next mousedown)
+          selectEl(el); syncSelCount();
+        } else {
+          // Plain click: clear selection now but defer selecting this card until
+          // the user actually drags. A click without movement never selects.
+          clearSel();
+          pendingSelectRef.current = () => { selectEl(el); syncSelCount(); };
+        }
+
         el.style.zIndex = '500';
         if (elType === 'card') {
-          el.style.filter = 'drop-shadow(0 20px 48px rgba(0,0,0,.9))';
-          el.style.transform = 'scale(1.06) rotate(2deg)';
+          el.style.willChange = 'transform';
+          canvasRef.current?.classList.add('dragging-active');
+          el.style.transition = 'transform 0.18s cubic-bezier(0.2,0,0,1), opacity 0.18s ease';
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            el.classList.add('card-lifting');
+            el.style.transform = 'scale(1.06) rotate(2deg)';
+            el.style.opacity   = '0.92';
+          }));
         }
       }
+    });
+
+    // Double-click on a canvas card selects it (group cards are skipped).
+    el.addEventListener('dblclick', () => {
+      if (el.closest('.group-container')) return; // card is inside a group — not a canvas item
+      clearSel();
+      selectEl(el);
+      syncSelCount();
     });
   }, [s2c, clearSel, selectEl, syncSelCount]);
 
@@ -1060,7 +1234,9 @@ export function DeckView() {
     const cp = s2c(e.clientX, e.clientY);
     dragRef.current = { type: 'single', el: cardEl, elType: 'card', ox: cp.x - left, oy: cp.y - top };
     cardEl.style.zIndex = '500';
-    cardEl.style.filter = 'drop-shadow(0 20px 48px rgba(0,0,0,.9))';
+    cardEl.style.willChange = 'transform';
+    cardEl.classList.add('card-lifting');
+    canvasRef.current?.classList.add('dragging-active');
     cardEl.style.transform = 'scale(1.06) rotate(2deg)';
     e.stopPropagation(); e.preventDefault();
   }, [s2c, makeItemDraggable, clearSel, selectEl, syncSelCount]);
@@ -1079,7 +1255,7 @@ export function DeckView() {
     makeCardClickable(cardEl);
   }, [ejectCard, makeCardClickable, syncSelCount]);
 
-  const spawnCardOnCanvas = useCallback((card: Card, qty = 1, board = 'main') => {
+  const spawnCardOnCanvas = useCallback((card: Card, qty = 1, board = 'main', entryId?: number) => {
     const r = viewportRef.current!.getBoundingClientRect();
     const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
     const offset = spawnIdxRef.current * 28;
@@ -1089,9 +1265,10 @@ export function DeckView() {
       name: card.name || '',
       typeLine: card.type_line || '',
       manaCost: card.mana_cost || '',
-      imageUrl: getImageUrl(card),
+      imageUrl: preferredImagesRef.current[card.oracle_id] || getImageUrl(card),
       qty,
       board,
+      entryId,
     };
     const el = makeCardEl(data);
     el.style.cssText = `position:absolute;left:${cp.x - 80 + offset}px;top:${cp.y - 120 + offset}px;z-index:20;cursor:grab;`;
@@ -1120,6 +1297,7 @@ export function DeckView() {
         : typeof ci === 'string' && ci ? (ci as string).split('').filter((c: string) => 'WUBRG'.includes(c))
         : [],
       edhrecRank: det?.full_data?.edhrec_rank,
+      collectionStatus: cardStatusesRef.current[oracleId],
     };
   }, []);
 
@@ -1214,8 +1392,9 @@ export function DeckView() {
     canvasRef.current!.appendChild(el);
     makeItemDraggable(el, 'widget');
     const rawGrps = readCanvasGroups(canvasRef.current!);
-    const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
+    const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps, cardStatusesRef.current);
     renderWidgetBody(el, defId, data, defaultParams);
+    renderWidgetBodyAsync(el, defId, data, defaultParams);
     applyWidgetDecorators(el);
     el.querySelector<HTMLButtonElement>('.widget-close-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1342,8 +1521,11 @@ export function DeckView() {
     txRef.current = state.tx ?? 80; tyRef.current = state.ty ?? 60; scRef.current = state.sc ?? 1;
     applyT();
 
-    // Only render cards still present in the deck (filter ghost cards from old saves)
-    const deckIds = new Set(deckCardsRef.current.map(dc => dc.oracle_id));
+    // Only render cards still present in the deck (filter ghost cards from old saves).
+    // Prefer matching by entryId (unique per instance) when available; fall back to
+    // oracle_id for legacy saves that predate the entryId field.
+    const deckIds      = new Set(deckCardsRef.current.map(dc => dc.oracle_id));
+    const deckEntryIds = new Set(deckCardsRef.current.map(dc => dc.id));
     const hasIds  = deckIds.size > 0; // false only during initial load race — allow all then
 
     for (const g of state.groups || []) {
@@ -1351,7 +1533,8 @@ export function DeckView() {
       el.style.cssText = `left:${g.left}px;top:${g.top}px;z-index:10;border-color:${g.color}55;`;
       const cardList = el.querySelector('.card-list')!;
       for (const c of g.cards || []) {
-        if (hasIds && !deckIds.has(c.oracleId)) continue; // skip removed cards
+        // entryId present → check specific instance; else fall back to oracle_id membership
+        if (hasIds && c.entryId ? !deckEntryIds.has(c.entryId) : !deckIds.has(c.oracleId)) continue; // skip removed cards
         const cardEl = makeCardEl(c);
         cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
         cardEl.classList.remove('canvas-item');
@@ -1375,7 +1558,7 @@ export function DeckView() {
     }
 
     for (const c of state.freeCards || []) {
-      if (hasIds && !deckIds.has(c.oracleId)) continue; // skip removed cards
+      if (hasIds && (c.entryId ? !deckEntryIds.has(c.entryId) : !deckIds.has(c.oracleId))) continue; // skip removed cards
       const el = makeCardEl(c);
       el.style.cssText = `position:absolute;left:${c.left}px;top:${c.top}px;z-index:20;cursor:grab;`;
       el.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = 'none');
@@ -1404,8 +1587,9 @@ export function DeckView() {
       cv.appendChild(el);
       makeItemDraggable(el, 'widget');
       const rawGrps = readCanvasGroups(cv);
-      const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
+      const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps, cardStatusesRef.current);
       renderWidgetBody(el, w.defId, data, w.params);
+      renderWidgetBodyAsync(el, w.defId, data, w.params);
       applyWidgetDecorators(el);
       el.querySelector<HTMLButtonElement>('.widget-close-btn')?.addEventListener('click', (evnt) => {
         evnt.stopPropagation();
@@ -1469,10 +1653,11 @@ export function DeckView() {
     const det = cardDetailsRef.current;
     if (!dc.length) return; // still loading
 
-    // IDs already visible on this canvas (free cards + cards inside groups)
-    const onCanvas = new Set<string>(
-      Array.from(cv.querySelectorAll<HTMLElement>('[data-oracle-id]'))
-        .map(el => el.dataset.oracleId!)
+    // Entry IDs already visible on this canvas (free cards + cards inside groups).
+    // Keyed by entryId so two copies of the same card each get their own slot.
+    const onCanvas = new Set<number>(
+      Array.from(cv.querySelectorAll<HTMLElement>('[data-entry-id]'))
+        .map(el => Number(el.dataset.entryId))
         .filter(Boolean)
     );
 
@@ -1486,16 +1671,17 @@ export function DeckView() {
     let col = 0;
 
     for (const entry of dc) {
-      if (onCanvas.has(entry.oracle_id)) continue;
+      if (onCanvas.has(entry.id)) continue;
       const detail = det[entry.oracle_id];
       const data: CardData = {
         oracleId: entry.oracle_id,
         name:     detail?.name      || entry.oracle_id,
         typeLine: detail?.type_line || '',
         manaCost: detail?.mana_cost || '',
-        imageUrl: detail ? getImageUrl(detail) : '',
+        imageUrl: preferredImagesRef.current[entry.oracle_id] || (detail ? getImageUrl(detail) : ''),
         qty:      entry.quantity || 1,
         board:    entry.board,
+        entryId:  entry.id,
       };
       const el = makeCardEl(data);
       el.style.cssText = `position:absolute;left:${80 + col * 176}px;top:${startY}px;z-index:20;cursor:grab;`;
@@ -1593,17 +1779,18 @@ export function DeckView() {
 
   // Always-fresh remove function for use inside the stable keydown effect.
   // Assigned on every render so the closure always captures current state.
-  const removeCardsFromDeckRef = useRef<(oracleIds: string[]) => void>(() => {});
-  removeCardsFromDeckRef.current = (oracleIds: string[]) => {
-    if (!oracleIds.length) return;
-    const removedSet = new Set(oracleIds);
-    oracleIds.forEach(oid => {
-      const entry = deckCardsRef.current.find(dc => dc.oracle_id === oid);
-      if (entry) window.libraryAPI.removeCardFromDeck({ id: entry.id }).catch(() => {});
+  // Takes deck_cards.id values (not oracle_ids) so two copies of the same card
+  // are treated as independent instances — deleting one never removes the other.
+  const removeCardsFromDeckRef = useRef<(entryIds: number[]) => void>(() => {});
+  removeCardsFromDeckRef.current = (entryIds: number[]) => {
+    if (!entryIds.length) return;
+    const idSet = new Set(entryIds);
+    entryIds.forEach(id => {
+      window.libraryAPI.removeCardFromDeck({ id }).catch(() => {});
     });
-    setDeckCards(prev => prev.filter(dc => !removedSet.has(dc.oracle_id)));
-    setDeck(prev => prev ? { ...prev, cards: (prev.cards ?? []).filter(dc => !removedSet.has(dc.oracle_id)) } : prev);
-    updateDeckCardCount(deckId, -oracleIds.length);
+    setDeckCards(prev => prev.filter(dc => !idSet.has(dc.id)));
+    setDeck(prev => prev ? { ...prev, cards: (prev.cards ?? []).filter(dc => !idSet.has(dc.id)) } : prev);
+    updateDeckCardCount(deckId, -entryIds.length);
   };
 
   useEffect(() => {
@@ -1645,8 +1832,14 @@ export function DeckView() {
     };
     wv.addEventListener('mousedown', onBgMouseDown);
 
-    // Document mouse move
-    const onMouseMove = (e: MouseEvent) => {
+    // Document mouse move — rAF-throttled so DOM mutations happen at most once per frame.
+    // Group BoundingClientRects are cached on the first card-drag move and cleared on mouseup,
+    // avoiding repeated forced-layout calls on every raw mouse event.
+    let moveRafId: number | null = null;
+    let latestMoveEvent: MouseEvent | null = null;
+    let cachedGroupRects: Array<{ el: HTMLDivElement; rect: DOMRect }> = [];
+
+    const processMove = (e: MouseEvent) => {
       // ── Resize (directional, canvas-space aware) ──────────────────────────
       if (resizeRef.current) {
         const { el, dir, startW, startH, startX, startY, startLeft } = resizeRef.current;
@@ -1661,13 +1854,13 @@ export function DeckView() {
           if (dir === 'bottom-right') {
             el.style.height = Math.max(MIN_H, startH + dy) + 'px';
           }
-          setWidgetBodyZoom(el);
+          setWidgetBodyZoom(el, newW);
         } else {
           // dir === 'left': anchor right edge, grow left
           const newW = Math.max(MIN_W, startW - dx);
           el.style.width = newW + 'px';
           el.style.left = (startLeft + startW - newW) + 'px';
-          setWidgetBodyZoom(el);
+          setWidgetBodyZoom(el, newW);
         }
         return;
       }
@@ -1685,6 +1878,11 @@ export function DeckView() {
         return;
       }
       if (!dragRef.current) return;
+      // Fire deferred selection on the first move of a plain-click drag
+      if (pendingSelectRef.current) {
+        pendingSelectRef.current();
+        pendingSelectRef.current = null;
+      }
       const cp = s2c(e.clientX, e.clientY);
       if (dragRef.current.type === 'multi') {
         const dx = cp.x - dragRef.current.ox, dy = cp.y - dragRef.current.oy;
@@ -1694,15 +1892,37 @@ export function DeckView() {
         el!.style.left = (cp.x - dragRef.current.ox) + 'px';
         el!.style.top = (cp.y - dragRef.current.oy) + 'px';
         if (elType === 'card' || elType === 'card-ghost') {
-          cv.querySelectorAll<HTMLElement>('.group-container').forEach(g =>
-            g.classList.toggle('group-drop-highlight', hitTest(e, g)));
+          // Build rect cache once per drag; avoids getBoundingClientRect on every event
+          if (!cachedGroupRects.length) {
+            cachedGroupRects = Array.from(cv.querySelectorAll<HTMLDivElement>('.group-container'))
+              .map(g => ({ el: g, rect: g.getBoundingClientRect() }));
+          }
+          cachedGroupRects.forEach(({ el: g, rect: r }) => {
+            const over = e.clientX > r.left && e.clientX < r.right && e.clientY > r.top && e.clientY < r.bottom;
+            g.classList.toggle('group-drop-highlight', over);
+          });
         }
       }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      latestMoveEvent = e;
+      if (moveRafId !== null) return;
+      moveRafId = requestAnimationFrame(() => {
+        moveRafId = null;
+        if (latestMoveEvent) {
+          processMove(latestMoveEvent);
+          latestMoveEvent = null;
+        }
+      });
     };
     document.addEventListener('mousemove', onMouseMove);
 
     // Document mouse up
     const onMouseUp = (e: MouseEvent) => {
+      // Plain click (no drag) — discard any pending selection so clicking never selects
+      pendingSelectRef.current = null;
+      cachedGroupRects = [];
       if (resizeRef.current) { resizeRef.current = null; scheduleAutoSave(); return; }
       if (panRef.current) { panRef.current = null; wv.style.cursor = (canvasModeRef.current === 'hand' || spaceHeldRef.current) ? 'grab' : ''; return; }
       if (rbandRef.current) {
@@ -1718,21 +1938,24 @@ export function DeckView() {
       }
       if (!dragRef.current) return;
       pushUndoSnapshot(); // snapshot before any mutation so Ctrl+Z can restore pre-drag state
+      cv.classList.remove('dragging-active');
       const { type } = dragRef.current;
       if (type === 'multi') {
-        dragRef.current.init!.forEach((_, el) => { el.style.zIndex = el.dataset.baseZ || '10'; });
+        dragRef.current.init!.forEach((_, el) => { el.style.zIndex = el.dataset.baseZ || '10'; el.style.willChange = ''; });
       } else {
         const { el, elType, sourceGroupEl } = dragRef.current;
         el!.style.zIndex = el!.dataset.baseZ || '10';
         if (elType === 'card') {
-          el!.style.filter = ''; el!.style.transform = '';
+          el!.style.transition = ''; el!.style.filter = ''; el!.style.transform = ''; el!.style.opacity = '';
+          el!.style.willChange = ''; el!.classList.remove('card-lifting');
           let dropped = false;
           cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => {
             g.classList.remove('group-drop-highlight');
             if (!dropped && hitTest(e, g)) { dropIntoGroup(el!, g); dropped = true; }
           });
         } else if (elType === 'card-ghost') {
-          el!.style.filter = ''; el!.style.transform = '';
+          el!.style.transition = ''; el!.style.filter = ''; el!.style.transform = '';
+          el!.style.willChange = ''; el!.classList.remove('card-lifting');
           cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => g.classList.remove('group-drop-highlight'));
 
           // The slot placeholder left behind in the source group is the authoritative
@@ -1757,7 +1980,6 @@ export function DeckView() {
 
             if (slot && g.contains(slot)) {
               // ── Same group: restore card at the slot's exact DOM position ──
-              // Insert card before slot (preserves original order), then remove slot.
               el!.style.cssText = ''; el!.style.cursor = 'grab';
               el!.classList.remove('canvas-item');
               el!.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
@@ -1766,10 +1988,10 @@ export function DeckView() {
               slot.remove();
               relayoutGroup(g);
             } else {
-              // ── Different group: slot stays for a moment, then removed ────
+              // ── Different group ───────────────────────────────────────────
               slot?.remove();
               if (sourceGroupEl) relayoutGroup(sourceGroupEl);
-              dropIntoGroup(el!, g); // card is on canvas → dropIntoGroup handles it
+              dropIntoGroup(el!, g);
             }
           });
 
@@ -1777,13 +1999,14 @@ export function DeckView() {
             // ── Canvas drop: card stays on canvas at ghost's final position ──
             slot?.remove();
             if (sourceGroupEl) relayoutGroup(sourceGroupEl);
-            // Card is already on the canvas — just clean up ghost styling
-            el!.style.opacity = '';
-            el!.style.filter  = '';
-            el!.style.transform = '';
-            el!.style.cursor  = 'grab';
-            el!.style.zIndex  = '20';
-            el!.dataset.baseZ = '20';
+            el!.style.transition = '';
+            el!.style.opacity    = '';
+            el!.style.filter     = '';
+            el!.style.transform  = '';
+            el!.style.willChange = '';
+            el!.style.cursor     = 'grab';
+            el!.style.zIndex     = '20';
+            el!.dataset.baseZ    = '20';
           }
         }
       }
@@ -1824,11 +2047,15 @@ export function DeckView() {
         if (selRef.current.size > 0) {
           e.preventDefault();
           pushUndoSnapshot();
-          const removedOracleIds: string[] = [];
+          const removedEntryIds: number[] = [];
           selRef.current.forEach(el => {
             if (el.classList.contains('card-stack')) {
+              // Commander cards are protected — skip deletion
+              const entryId = Number(el.dataset.entryId);
+              const isCommander = entryId && deckCardsRef.current.find(dc => dc.id === entryId)?.board === 'commander';
+              if (isCommander) return;
               // Individual card → remove from deck too
-              if (el.dataset.oracleId) removedOracleIds.push(el.dataset.oracleId);
+              if (entryId) removedEntryIds.push(entryId);
               el.remove();
             } else if (el.classList.contains('group-container')) {
               // Group → eject cards to free canvas (preserve them in deck), then remove group
@@ -1851,7 +2078,7 @@ export function DeckView() {
             }
           });
           selRef.current.clear();
-          if (removedOracleIds.length) removeCardsFromDeckRef.current(removedOracleIds);
+          if (removedEntryIds.length) removeCardsFromDeckRef.current(removedEntryIds);
           scheduleAutoSave();
         }
       }
@@ -1882,6 +2109,7 @@ export function DeckView() {
     document.addEventListener('keyup', onKeyUp);
 
     return () => {
+      if (moveRafId !== null) cancelAnimationFrame(moveRafId);
       wv.removeEventListener('wheel', onWheel);
       wv.removeEventListener('mousedown', onBgMouseDown);
       document.removeEventListener('mousemove', onMouseMove);
@@ -1891,20 +2119,117 @@ export function DeckView() {
     };
   }, [applyT, zoomAt, s2c, clearSel, selectEl, syncSelCount, dropIntoGroup, scheduleAutoSave, pushUndoSnapshot, serializeCanvas, restoreCanvas]);
 
+  // ── AI event listeners ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onAICreateGroup = (e: Event) => {
+      const { name, color, oracleIds, layoutMode } = (e as CustomEvent).detail;
+      if (!viewportRef.current || !canvasRef.current) return;
+      const g = makeGroupEl(name || 'AI Group', color || '#f2ca83', layoutMode ?? 'grid');
+      const r = viewportRef.current.getBoundingClientRect();
+      const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
+      g.style.left = (cp.x - 100) + 'px';
+      g.style.top  = (cp.y - 60) + 'px';
+      canvasRef.current.appendChild(g);
+      for (const oid of (oracleIds || [])) {
+        const cardEl = canvasRef.current.querySelector<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oid)}"]`);
+        if (cardEl) dropIntoGroup(cardEl, g);
+      }
+      pushUndoSnapshot();
+      scheduleAutoSave();
+    };
+
+    const onAISetFilters = (e: Event) => {
+      setSearchOpen(true);
+    };
+
+    const onAIAddSticker = (e: Event) => {
+      const { text, width } = (e as CustomEvent).detail;
+      if (!viewportRef.current || !canvasRef.current) return;
+      const el = makeStickerEl(text ?? '');
+      if (width) el.style.width = `${width}px`;
+      const r = viewportRef.current.getBoundingClientRect();
+      const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
+      el.style.cssText += `;left:${cp.x}px;top:${cp.y}px;`;
+      canvasRef.current.appendChild(el);
+      scheduleAutoSave();
+    };
+
+    const onAIApplySwap = async (e: Event) => {
+      const { cutOracleId, addOracleId, deckId: swapDeckId } = (e as CustomEvent).detail;
+      const cutEntry = deckCards.find(c => c.oracle_id === cutOracleId);
+      if (cutEntry) {
+        await window.libraryAPI.removeCardFromDeck({ id: cutEntry.id });
+        setDeckCards(prev => prev.filter(c => c.id !== cutEntry.id));
+      }
+      const added = await window.libraryAPI.addCardToDeck({ deckId: swapDeckId ?? deckId, oracleId: addOracleId, board: 'main' });
+      if (added) {
+        const card = await window.cardsAPI.getCard({ oracleId: addOracleId });
+        if (card) spawnCardOnCanvas(card, 1, 'main', added.id);
+      }
+    };
+
+    const onAIRemoveCards = (e: Event) => {
+      const { oracleIds } = (e as CustomEvent).detail;
+      const entries = deckCards.filter(c => (oracleIds as string[]).includes(c.oracle_id));
+      removeCardsFromDeckRef.current(entries.map(c => c.id));
+    };
+
+    window.addEventListener('ai:create-group',      onAICreateGroup as EventListener);
+    window.addEventListener('ai:set-search-filters', onAISetFilters as EventListener);
+    window.addEventListener('ai:add-sticker',        onAIAddSticker as EventListener);
+    window.addEventListener('ai:apply-swap',         onAIApplySwap  as EventListener);
+    window.addEventListener('ai:remove-cards',       onAIRemoveCards as EventListener);
+
+    return () => {
+      window.removeEventListener('ai:create-group',      onAICreateGroup as EventListener);
+      window.removeEventListener('ai:set-search-filters', onAISetFilters as EventListener);
+      window.removeEventListener('ai:add-sticker',        onAIAddSticker as EventListener);
+      window.removeEventListener('ai:apply-swap',         onAIApplySwap  as EventListener);
+      window.removeEventListener('ai:remove-cards',       onAIRemoveCards as EventListener);
+    };
+  }, [deckCards, deckId, dropIntoGroup, pushUndoSnapshot, scheduleAutoSave, s2c, spawnCardOnCanvas]);
+
   // ── Handlers ──────────────────────────────────────────────────────────────
+
+  // When the user selects a different printing in the detail panel, update every
+  // canvas element for that card and remember the choice for future spawns.
+  const handlePrintingChange = useCallback((scryfallId: string, imageUrl: string) => {
+    if (!detailOracleId || !imageUrl) return;
+    preferredImagesRef.current[detailOracleId] = imageUrl;
+    if (canvasRef.current) {
+      canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]').forEach(cardEl => {
+        if (cardEl.dataset.oracleId === detailOracleId) setCardElImage(cardEl, imageUrl);
+      });
+    }
+    scheduleAutoSave();
+  }, [detailOracleId, scheduleAutoSave]);
 
   // Fix #3: optimistic card mutations — update local state immediately, no full reload
   const handleAddCard = async (card: Card) => {
     if (!deckId) return;
+    // Singleton enforcement for Commander
+    if (deck?.format === 'commander' && !BASIC_LAND_NAMES.has(card.name || '')) {
+      const existing = deckCards.find(dc => dc.oracle_id === card.oracle_id);
+      if (existing) {
+        useToastStore.getState().push({
+          type: 'warning',
+          title: 'Singleton format',
+          message: `${card.name} is already in your deck. Commander allows only 1 copy.`,
+        });
+        return;
+      }
+    }
     try {
-      const result = await window.libraryAPI.addCardToDeck({ deckId, oracleId: card.oracle_id, board: 'main' });
+      const scryfallId = card.full_data?.id || undefined;
+      const result = await window.libraryAPI.addCardToDeck({ deckId, oracleId: card.oracle_id, board: 'main', scryfallId });
       try { await window.libraryAPI.logActivity({ event: 'card_added', deckId, oracleId: card.oracle_id }); } catch {}
-      const newEntry: DeckCardEntry = { id: result.id, oracle_id: card.oracle_id, board: 'main', quantity: 1 };
+      const newEntry: DeckCardEntry = { id: result.id, oracle_id: card.oracle_id, board: 'main', quantity: 1, scryfall_id: scryfallId };
       setDeckCards(prev => [...prev, newEntry]);
       setCardDetails(prev => ({ ...prev, [card.oracle_id]: card }));
       setDeck(prev => prev ? { ...prev, cards: [...(prev.cards ?? []), newEntry] } : prev);
       updateDeckCardCount(deckId, 1);
-      spawnCardOnCanvas(card); // always spawn — list and canvas are the same source
+      spawnCardOnCanvas(card, 1, 'main', result.id); // pass entryId so the canvas element is traceable
     } catch (err) {
       console.error('addCardToDeck failed:', err);
       useToastStore.getState().push({ type: 'error', title: 'Failed to add card', message: String(err) });
@@ -1938,8 +2263,8 @@ export function DeckView() {
     // Spawn each card on the canvas immediately (same as single-add).
     // We cannot use reconcileCanvas() here because deckCardsRef is only
     // updated after the next React render, so the new entries would be invisible to it.
-    for (const card of addedCards) {
-      spawnCardOnCanvas(card);
+    for (let i = 0; i < addedCards.length; i++) {
+      spawnCardOnCanvas(addedCards[i], 1, 'main', newEntries[i].id);
     }
   };
 
@@ -2058,6 +2383,86 @@ export function DeckView() {
     scheduleAutoSave();
   }, [clearSel, pushUndoSnapshot, scheduleAutoSave]);
 
+  const handleAutoArrange = useCallback(() => {
+    if (!canvasRef.current || !viewportRef.current) return;
+    const cv = canvasRef.current;
+
+    const ROLE_GROUPS: { label: string; color: string; test: (tl: string) => boolean }[] = [
+      { label: 'Commanders',   color: '#f2ca83', test: tl => false }, // filled by board check
+      { label: 'Creatures',    color: '#86efac', test: tl => /creature/i.test(tl) && !/land/i.test(tl) },
+      { label: 'Instants',     color: '#bcd0ff', test: tl => /^instant/i.test(tl) },
+      { label: 'Sorceries',    color: '#c4b5fd', test: tl => /^sorcery/i.test(tl) },
+      { label: 'Enchantments', color: '#f9a8d4', test: tl => /enchantment/i.test(tl) && !/creature/i.test(tl) },
+      { label: 'Artifacts',    color: '#c4c6cd', test: tl => /artifact/i.test(tl) && !/creature/i.test(tl) },
+      { label: 'Planeswalkers',color: '#c084fc', test: tl => /planeswalker/i.test(tl) },
+      { label: 'Lands',        color: '#d4aa7d', test: tl => /^land/i.test(tl) },
+    ];
+
+    // Gather all free-floating cards (not inside a group) with oracle id
+    const freeCards = Array.from(cv.querySelectorAll<HTMLDivElement>(':scope > .card-stack[data-oracle-id]'));
+    if (!freeCards.length) {
+      useToastStore.getState().push({ type: 'info', title: 'Auto-Arrange', message: 'No free cards to arrange. Move cards out of groups first.' });
+      return;
+    }
+
+    pushUndoSnapshot();
+    clearSel();
+
+    // Bucket each card element into a category
+    const buckets = new Map<string, HTMLDivElement[]>();
+    for (const el of freeCards) {
+      const oid = el.dataset.oracleId!;
+      const dc = deckCards.find(c => c.oracle_id === oid);
+      const typeLine = (cardDetails[oid]?.type_line || '').toLowerCase();
+
+      let label = 'Other';
+      if (dc?.board === 'commander' || dc?.board === 'partner') {
+        label = 'Commanders';
+      } else {
+        for (const rg of ROLE_GROUPS) {
+          if (rg.label === 'Commanders') continue;
+          if (rg.test(typeLine)) { label = rg.label; break; }
+        }
+      }
+      if (!buckets.has(label)) buckets.set(label, []);
+      buckets.get(label)!.push(el);
+    }
+
+    if (!buckets.size) return;
+
+    // Layout groups in a row starting from viewport center
+    const r = viewportRef.current.getBoundingClientRect();
+    const startCanvas = s2c(r.left + 80, r.top + 80);
+    const GROUP_GAP = 48;
+    let curX = startCanvas.x;
+
+    const orderedLabels = [...ROLE_GROUPS.map(rg => rg.label), 'Other'].filter(l => buckets.has(l));
+    for (const label of orderedLabels) {
+      const cards = buckets.get(label)!;
+      const rg = ROLE_GROUPS.find(rg => rg.label === label) ?? { color: '#888' };
+      const g = makeGroupEl(label, rg.color);
+      g.style.left = `${curX}px`;
+      g.style.top  = `${startCanvas.y}px`;
+      g.style.zIndex = '10';
+      cv.appendChild(g);
+      makeItemDraggable(g, 'group');
+      attachContextMenu(g);
+      g.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const btnR = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const wvR = viewportRef.current!.getBoundingClientRect();
+        setGroupMenu({ top: btnR.top - wvR.top, left: btnR.right - wvR.left + 6, groupEl: g });
+      });
+      for (const cardEl of cards) dropIntoGroup(cardEl, g);
+      // Estimate group width (5 cards per row × ~(160+12)px) to position next group
+      const cols = Math.min(cards.length, 5);
+      curX += cols * 172 + GROUP_GAP;
+    }
+
+    scheduleAutoSave();
+    useToastStore.getState().push({ type: 'success', title: 'Auto-Arranged', message: `Organised ${freeCards.length} cards into ${buckets.size} groups.` });
+  }, [attachContextMenu, cardDetails, clearSel, deckCards, dropIntoGroup, makeItemDraggable, pushUndoSnapshot, s2c, scheduleAutoSave, setGroupMenu]);
+
   const handleAddSticker = () => {
     const r = viewportRef.current!.getBoundingClientRect();
     const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
@@ -2096,14 +2501,20 @@ export function DeckView() {
   // groups and stickers are simply deleted.
   const handleMultiDelete = () => {
     pushUndoSnapshot();
-    const removedOracleIds: string[] = [];
+    const removedEntryIds: number[] = [];
     selRef.current.forEach(el => {
       if (el.classList.contains('card-stack')) {
-        if (el.dataset.oracleId) removedOracleIds.push(el.dataset.oracleId);
+        // Commander cards are protected — skip deletion
+        const entryId = Number(el.dataset.entryId);
+        const isCommander = entryId && deckCardsRef.current.find(dc => dc.id === entryId)?.board === 'commander';
+        if (isCommander) return;
+        if (entryId) removedEntryIds.push(entryId);
         el.remove();
       } else if (el.classList.contains('group-container')) {
         el.querySelectorAll<HTMLDivElement>('.card-stack').forEach(cardEl => {
-          if (cardEl.dataset.oracleId) removedOracleIds.push(cardEl.dataset.oracleId);
+          const entryId = Number(cardEl.dataset.entryId);
+          const isCommander = entryId && deckCardsRef.current.find(dc => dc.id === entryId)?.board === 'commander';
+          if (!isCommander && entryId) removedEntryIds.push(entryId);
         });
         el.remove();
       } else {
@@ -2112,7 +2523,7 @@ export function DeckView() {
       }
     });
     selRef.current.clear();
-    if (removedOracleIds.length) removeCardsFromDeckRef.current(removedOracleIds);
+    if (removedEntryIds.length) removeCardsFromDeckRef.current(removedEntryIds);
     setMultiMenu(null);
     scheduleAutoSave();
   };
@@ -2123,7 +2534,10 @@ export function DeckView() {
     if (!cardMenu) return;
     const { cardEl, oracleId } = cardMenu;
     setCardMenu(null);
-    const entry = deckCardsRef.current.find(dc => dc.oracle_id === oracleId);
+    const entryId = Number(cardEl.dataset.entryId);
+    const entry = entryId
+      ? deckCardsRef.current.find(dc => dc.id === entryId)
+      : deckCardsRef.current.find(dc => dc.oracle_id === oracleId);
     if (!entry) return;
     // Toggle: clicking the already-active board reverts to 'main'
     const newBoard = (entry.board === targetBoard ? 'main' : targetBoard) as DeckCardEntry['board'];
@@ -2138,11 +2552,14 @@ export function DeckView() {
     if (!cardMenu) return;
     const { cardEl, oracleId } = cardMenu;
     setCardMenu(null);
-    const entry = deckCardsRef.current.find(dc => dc.oracle_id === oracleId);
+    const entryId = Number(cardEl.dataset.entryId);
+    const entry = entryId
+      ? deckCardsRef.current.find(dc => dc.id === entryId)
+      : deckCardsRef.current.find(dc => dc.oracle_id === oracleId);
     if (!entry) return;
     const newQty = (entry.quantity || 1) + delta;
     if (newQty < 1) {
-      handleRemoveCard(entry.id, oracleId);
+      handleRemoveCard(entry.id, oracleId, cardEl);
     } else {
       await window.libraryAPI.updateCardQuantity({ id: entry.id, quantity: newQty });
       setDeckCards(prev => prev.map(dc => dc.id === entry.id ? { ...dc, quantity: newQty } : dc));
@@ -2271,15 +2688,19 @@ export function DeckView() {
     setTab(newTab);
   };
 
-  // Fix #3: Remove card — optimistic state update, no reload
-  const handleRemoveCard = async (deckCardId: number, oracleId: string) => {
+  // Fix #3: Remove card — optimistic state update, no reload.
+  // targetEl: the specific canvas element to remove (preferred). Falls back to
+  // querying by data-entry-id so the exact instance is always targeted.
+  const handleRemoveCard = async (deckCardId: number, oracleId: string, targetEl?: HTMLElement) => {
     await window.libraryAPI.removeCardFromDeck({ id: deckCardId });
     try { await window.libraryAPI.logActivity({ event: 'card_removed', deckId, oracleId }); } catch {}
     setDeckCards(prev => prev.filter(dc => dc.id !== deckCardId));
     setDeck(prev => prev ? { ...prev, cards: (prev.cards ?? []).filter(dc => dc.id !== deckCardId) } : prev);
     updateDeckCardCount(deckId, -1);
-    if (oracleId && canvasRef.current) {
-      const cardEl = canvasRef.current.querySelector<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oracleId)}"]`);
+    if (canvasRef.current) {
+      // Use the provided element, or find the one carrying this exact entryId
+      const cardEl = targetEl
+        || canvasRef.current.querySelector<HTMLDivElement>(`[data-entry-id="${deckCardId}"]`);
       if (cardEl) {
         const group = cardEl.closest<HTMLDivElement>('.group-container');
         cardEl.remove();
@@ -2294,6 +2715,41 @@ export function DeckView() {
     if (newQty < 1) { handleRemoveCard(deckCardId, oracleId); return; }
     await window.libraryAPI.updateCardQuantity({ id: deckCardId, quantity: newQty });
     setDeckCards(prev => prev.map(dc => dc.id === deckCardId ? { ...dc, quantity: newQty } : dc));
+  };
+
+  const handleToggleProxy = async (deckCardId: number, currentIsProxy: number | undefined) => {
+    const newVal = !currentIsProxy;
+    await window.libraryAPI.updateCardProxy({ id: deckCardId, isProxy: newVal });
+    setDeckCards(prev => prev.map(dc => dc.id === deckCardId ? { ...dc, is_proxy: newVal ? 1 : 0 } : dc));
+    try {
+      const statuses = await window.libraryAPI.getDeckCardStatuses({ deckId });
+      cardStatusesRef.current = statuses;
+      setCardStatuses(statuses);
+    } catch { /* non-critical */ }
+  };
+
+  const handleExportMissing = (includeProxies: boolean) => {
+    const lines: string[] = [];
+    for (const dc of deckCards) {
+      const st = cardStatuses[dc.oracle_id];
+      if (st === 'missing' || (includeProxies && st === 'proxy')) {
+        const name = cardDetails[dc.oracle_id]?.name || dc.oracle_id;
+        lines.push(`${dc.quantity || 1} ${name}`);
+      }
+    }
+    if (!lines.length) { useToastStore.getState().push({ type: 'info', title: 'Nothing to export', message: 'No missing cards found' }); return; }
+    navigator.clipboard.writeText(lines.join('\n'));
+    useToastStore.getState().push({ type: 'success', title: 'Copied', message: `${lines.length} missing card${lines.length !== 1 ? 's' : ''} copied to clipboard` });
+  };
+
+  const handleAddMissingToWishlist = async () => {
+    const missing = deckCards.filter(dc => cardStatuses[dc.oracle_id] === 'missing');
+    if (!missing.length) { useToastStore.getState().push({ type: 'info', title: 'Nothing to add', message: 'No missing cards found' }); return; }
+    let added = 0;
+    for (const dc of missing) {
+      try { await window.libraryAPI.addToWishlist({ oracleId: dc.oracle_id, scryfallId: dc.scryfall_id, quantity: dc.quantity || 1 }); added++; } catch { /* continue */ }
+    }
+    useToastStore.getState().push({ type: 'success', title: 'Wishlist updated', message: `Added ${added} card${added !== 1 ? 's' : ''} to wishlist` });
   };
 
   // Fix #3: Toggle board — optimistic state update, no reload
@@ -2330,13 +2786,13 @@ export function DeckView() {
     });
     groupsToRelayout.forEach(g => relayoutGroup(g));
   }, [deckCards]);
-  // Refresh all canvas widgets whenever deck data changes
+  // Refresh all canvas widgets whenever deck data or collection statuses change
   useEffect(() => {
     if (!canvasRef.current || !deckCards.length) return;
     const rawGrps = readCanvasGroups(canvasRef.current);
-    const data = buildWidgetDataFromState(deckCards, cardDetails, rawGrps);
+    const data = buildWidgetDataFromState(deckCards, cardDetails, rawGrps, cardStatuses);
     refreshAllWidgets(data);
-  }, [deckCards, cardDetails, refreshAllWidgets]);
+  }, [deckCards, cardDetails, cardStatuses, refreshAllWidgets]);
   // Refresh all decorator overlays (standalone pills + widget-embedded badges) whenever deck card data changes
   useEffect(() => {
     if (!canvasRef.current || !deckCards.length) return;
@@ -2344,6 +2800,130 @@ export function DeckView() {
     refreshAllWidgetDecorators();
   }, [deckCards, cardDetails, refreshAllDecoratorOverlays, refreshAllWidgetDecorators]);
   const totalCards = deckCards.reduce((s, c) => s + (c.quantity || 1), 0);
+
+  // ── Deck price & ownership stats ──────────────────────────────────────────
+  const deckTotalPrice = (() => {
+    let total = 0;
+    for (const dc of deckCards) {
+      const usd = parseFloat((cardDetails[dc.oracle_id]?.full_data as any)?.prices?.usd || '0');
+      if (usd > 0) total += usd * (dc.quantity || 1);
+    }
+    return total;
+  })();
+
+  const ownershipStats = (() => {
+    const main = deckCards.filter(dc => dc.board !== 'sideboard');
+    let owned = 0;
+    for (const dc of main) {
+      const st = cardStatuses[dc.oracle_id];
+      if (st && st !== 'missing') owned++;
+    }
+    return { owned, total: main.length, pct: main.length > 0 ? Math.round((owned / main.length) * 100) : 0 };
+  })();
+
+  // ── Hand simulator ────────────────────────────────────────────────────────
+  const [simHand, setSimHand] = useState<{ oracleId: string; name: string; imgUrl: string; typeLine: string; manaCost: string; }[]>([]);
+  const [simMulligans, setSimMulligans] = useState(0);
+  const [simLibSize, setSimLibSize] = useState(0);
+
+  // ── Combo detection ───────────────────────────────────────────────────────
+  type ComboResult = { id: string; cards: string[]; results: string[]; description: string; identity: string };
+  const [combos, setCombos] = useState<ComboResult[]>([]);
+  const [combosStatus, setCombosStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+
+  const drawSimHand = useCallback((handSize: number) => {
+    const pool: string[] = [];
+    const mainCards = deckCards.filter(dc => dc.board === 'main' || dc.board === 'commander');
+    for (const dc of mainCards) {
+      for (let i = 0; i < (dc.quantity || 1); i++) pool.push(dc.oracle_id);
+    }
+    if (pool.length < handSize) return;
+    // Fisher-Yates shuffle
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const drawn = pool.slice(0, handSize);
+    setSimHand(drawn.map(oid => {
+      const det = cardDetails[oid];
+      const fd = (det?.full_data || {}) as Record<string, any>;
+      const imgUrl = fd.image_uris?.small || fd.card_faces?.[0]?.image_uris?.small || '';
+      return { oracleId: oid, name: det?.name || oid, imgUrl, typeLine: det?.type_line || '', manaCost: det?.mana_cost || '' };
+    }));
+    setSimLibSize(pool.length - handSize);
+  }, [deckCards, cardDetails]);
+
+  const missingCards = (() => {
+    return deckCards
+      .filter(dc => cardStatuses[dc.oracle_id] === 'missing')
+      .map(dc => {
+        const detail = cardDetails[dc.oracle_id];
+        const usd = parseFloat((detail?.full_data as any)?.prices?.usd || '0') || 0;
+        return { dc, detail, usd, totalUsd: usd * (dc.quantity || 1) };
+      })
+      .sort((a, b) => b.usd - a.usd);
+  })();
+
+  // ── Commander color-identity violations ───────────────────────────────────
+  const commanderColorIdentity = (() => {
+    const ci = deck?.color_identity;
+    if (!ci) return null;
+    const arr: string[] = Array.isArray(ci) ? ci : (() => { try { return JSON.parse(ci as string); } catch { return []; } })();
+    return new Set(arr);
+  })();
+
+  const BASIC_LAND_NAMES = new Set([
+    'Plains', 'Island', 'Swamp', 'Mountain', 'Forest', 'Wastes',
+    'Snow-Covered Plains', 'Snow-Covered Island', 'Snow-Covered Swamp',
+    'Snow-Covered Mountain', 'Snow-Covered Forest',
+  ]);
+
+  const violatingOracleIds = (() => {
+    if (deck?.format !== 'commander' || !commanderColorIdentity) return new Set<string>();
+    const violations = new Set<string>();
+    for (const dc of deckCards) {
+      if (dc.board === 'commander' || dc.board === 'partner') continue;
+      const ci = cardDetails[dc.oracle_id]?.color_identity;
+      if (!ci) continue;
+      const cardColors: string[] = Array.isArray(ci) ? (ci as string[])
+        : (() => { try { return JSON.parse(ci as string) as string[]; } catch { return []; } })();
+      if (cardColors.some(c => !commanderColorIdentity.has(c))) violations.add(dc.oracle_id);
+    }
+    return violations;
+  })();
+
+  const singletonViolations = (() => {
+    if (deck?.format !== 'commander') return new Set<string>();
+    const violations = new Set<string>();
+    for (const dc of deckCards) {
+      const name = cardDetails[dc.oracle_id]?.name || '';
+      if (BASIC_LAND_NAMES.has(name)) continue;
+      if ((dc.quantity || 1) > 1) violations.add(dc.oracle_id);
+    }
+    return violations;
+  })();
+
+  // ── Push/clear color-identity violation badges on canvas cards ────────────
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    // Remove old badges
+    cv.querySelectorAll('[data-ci-violation]').forEach(el => el.remove());
+    // Add new badges
+    violatingOracleIds.forEach(oid => {
+      cv.querySelectorAll<HTMLDivElement>(`[data-oracle-id="${CSS.escape(oid)}"]`).forEach(cardEl => {
+        const badge = document.createElement('div');
+        badge.setAttribute('data-ci-violation', '1');
+        badge.style.cssText = 'position:absolute;inset:0;border-radius:0.75rem;border:2px solid rgba(248,113,113,0.7);pointer-events:none;z-index:31;';
+        const label = document.createElement('div');
+        label.style.cssText = 'position:absolute;bottom:4px;left:50%;transform:translateX(-50%);background:rgba(220,38,38,0.85);color:#fff;font-size:8px;font-weight:900;padding:1px 5px;border-radius:3px;white-space:nowrap;letter-spacing:.04em;';
+        label.textContent = 'COLOR';
+        badge.appendChild(label);
+        cardEl.appendChild(badge);
+      });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [violatingOracleIds]);
 
   // ── List view data ────────────────────────────────────────────────────────
 
@@ -2406,10 +2986,43 @@ export function DeckView() {
                   </div>
                 )}
               </div>
+              <button
+                onClick={toggleAI}
+                title="Karn AI"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md transition-all no-drag text-[12px] font-semibold"
+                style={aiOpen
+                  ? { background: 'rgba(242,202,131,0.15)', color: '#f2ca83', border: '1px solid rgba(242,202,131,0.2)' }
+                  : { color: 'rgba(242,202,131,0.5)', border: '1px solid rgba(242,202,131,0.1)' }
+                }
+              >
+                <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span>
+                Karn
+              </button>
             </div>
           </div>
 
-          {/* Workshop / List tab toggle */}
+          {/* Deck stats chips */}
+          {!isLoading && deckCards.length > 0 && (
+            <div className="flex items-center gap-3 mr-4">
+              {deckTotalPrice > 0 && (
+                <span className="text-[11px] font-bold tabular-nums text-on-surface-variant/60" title="Estimated deck value (USD, non-foil)">
+                  ${deckTotalPrice.toFixed(2)}
+                </span>
+              )}
+              {ownershipStats.total > 0 && (
+                <button
+                  className="text-[11px] font-bold tabular-nums hover:opacity-75 transition-opacity"
+                  title={`${ownershipStats.owned} of ${ownershipStats.total} cards owned — click to see missing`}
+                  style={{ color: ownershipStats.pct >= 80 ? '#4ade80' : ownershipStats.pct >= 50 ? '#f2ca83' : 'rgba(255,255,255,0.35)' }}
+                  onClick={() => missingCards.length > 0 && handleTabChange('missing')}
+                >
+                  {ownershipStats.pct}% owned
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Workshop / List / Missing tab toggle */}
           <div className="bg-surface-container-highest rounded-lg p-0.5 flex items-center">
             <button
               onClick={() => handleTabChange('workshop')}
@@ -2423,15 +3036,46 @@ export function DeckView() {
             >
               <span className="material-symbols-outlined text-[16px]">list</span>List
             </button>
+            {missingCards.length > 0 && (
+              <button
+                onClick={() => handleTabChange('missing')}
+                className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'missing' ? 'bg-surface-container-high text-red-400 font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+              >
+                <span className="material-symbols-outlined text-[16px]">shopping_cart</span>
+                Missing
+                <span
+                  className="text-[9px] font-black px-1.5 rounded-full"
+                  style={{ background: tab === 'missing' ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)', color: tab === 'missing' ? '#f87171' : 'rgba(255,255,255,0.35)' }}
+                >
+                  {missingCards.length}
+                </span>
+              </button>
+            )}
+            <button
+              onClick={() => handleTabChange('simulate')}
+              className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'simulate' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">casino</span>
+              Simulate
+            </button>
+            <button
+              onClick={() => handleTabChange('combos')}
+              className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'combos' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
+              Combos
+            </button>
           </div>
         </div>
 
-        {/* #19 – Commander format validation banner */}
+        {/* Commander format validation banner */}
         {deck?.format === 'commander' && !isLoading && (() => {
           const commanders = deckCards.filter(c => c.board === 'commander');
           const warnings: string[] = [];
           if (commanders.length !== 1) warnings.push(`${commanders.length === 0 ? 'No' : commanders.length} commander${commanders.length !== 1 ? 's' : ''} — needs exactly 1`);
           if (totalCards !== 100) warnings.push(`${totalCards}/100 cards`);
+          if (violatingOracleIds.size > 0) warnings.push(`${violatingOracleIds.size} card${violatingOracleIds.size !== 1 ? 's' : ''} violate color identity`);
+          if (singletonViolations.size > 0) warnings.push(`${singletonViolations.size} card${singletonViolations.size !== 1 ? 's' : ''} exceed singleton limit`);
           if (!warnings.length) return null;
           return (
             <div className="flex items-center gap-2 px-margin-desktop py-2 bg-orange-500/5 border-b border-orange-500/20 flex-shrink-0">
@@ -2468,10 +3112,13 @@ export function DeckView() {
           </div>
         )}
 
+        {/* ── Canvas + list view wrapper (panels are positioned inside this) ── */}
+        <div className="flex-1 relative min-h-0 overflow-hidden">
+
         {/* Workshop view — always mounted so canvas DOM survives tab switches */}
         <div
           ref={viewportRef}
-          className="flex-1 relative overflow-hidden bg-[#0D0D0D] canvas-grid"
+          className="absolute inset-0 overflow-hidden bg-[#0D0D0D] canvas-grid"
           style={{ display: tab === 'workshop' ? undefined : 'none' }}
         >
             {/* Canvas */}
@@ -2514,6 +3161,14 @@ export function DeckView() {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/5 hover:text-primary transition-all text-label-md font-bold"
                 >
                   <span className="material-symbols-outlined text-[16px]">folder_open</span>Group
+                </button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Auto-Arrange by Type">
+                <button
+                  onClick={handleAutoArrange}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/5 hover:text-primary transition-all text-label-md font-bold"
+                >
+                  <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>Arrange
                 </button>
               </ToolbarTooltip>
               <ToolbarTooltip label="Add Note" shortcut="N">
@@ -2696,9 +3351,16 @@ export function DeckView() {
 
             {/* Card right-click context menu */}
             {cardMenu && (() => {
-              const entry = deckCardsRef.current.find(dc => dc.oracle_id === cardMenu.oracleId);
+              // Look up by entryId first (unique per instance) so two copies of the
+              // same card are treated independently. Fall back to oracle_id for legacy
+              // canvas elements saved before entryId was introduced.
+              const menuEntryId = Number(cardMenu.cardEl.dataset.entryId);
+              const entry = menuEntryId
+                ? deckCardsRef.current.find(dc => dc.id === menuEntryId)
+                : deckCardsRef.current.find(dc => dc.oracle_id === cardMenu.oracleId);
               const board = entry?.board ?? 'main';
               const qty   = entry?.quantity ?? 1;
+              const isCommander = board === 'commander';
               return (
                 <div
                   className="absolute z-[601] glass-panel rounded-xl shadow-2xl py-1.5 min-w-[188px]"
@@ -2723,6 +3385,17 @@ export function DeckView() {
                     </button>
                   </div>
 
+                  {/* Proxy */}
+                  <div className="border-t border-white/5 mt-1 px-3 pt-2 pb-1">
+                    <button
+                      onClick={() => { if (entry) { setCardMenu(null); handleToggleProxy(entry.id, entry.is_proxy); } }}
+                      className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-label-md transition-all ${entry?.is_proxy ? 'bg-teal-500/10 text-teal-300' : 'text-on-surface-variant hover:bg-white/5 hover:text-on-surface'}`}
+                    >
+                      <span className="material-symbols-outlined text-[15px]" style={{ fontVariationSettings: entry?.is_proxy ? "'FILL' 1" : "'FILL' 0" }}>content_copy</span>
+                      {entry?.is_proxy ? 'Remove proxy mark' : 'Mark as proxy'}
+                    </button>
+                  </div>
+
                   {/* Copies */}
                   <div className="border-t border-white/5 mt-1 px-3 pt-2 pb-2">
                     <p className="text-[9px] text-on-surface-variant/35 uppercase tracking-widest font-bold mb-2">Copies</p>
@@ -2737,12 +3410,19 @@ export function DeckView() {
 
                   {/* Remove */}
                   <div className="border-t border-white/5">
-                    <button
-                      onClick={() => { if (entry) { setCardMenu(null); handleRemoveCard(entry.id, cardMenu.oracleId); } }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-red-400/70 hover:bg-red-500/10 hover:text-red-400 transition-all text-label-md mt-0.5"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">delete_outline</span>Remove from Deck
-                    </button>
+                    {isCommander ? (
+                      <div className="flex items-center gap-2.5 px-3 py-2 text-on-surface-variant/30 text-label-md mt-0.5 cursor-not-allowed select-none">
+                        <span className="material-symbols-outlined text-[16px]">shield</span>
+                        <span>Commander is protected</span>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { if (entry) { setCardMenu(null); handleRemoveCard(entry.id, cardMenu.oracleId, cardMenu.cardEl); } }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-red-400/70 hover:bg-red-500/10 hover:text-red-400 transition-all text-label-md mt-0.5"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">delete_outline</span>Remove from Deck
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -2759,8 +3439,9 @@ export function DeckView() {
                 widgetParamPopover.el.dataset.widgetParams = JSON.stringify(next);
                 // Re-render the widget body live
                 const rawGrps = canvasRef.current ? readCanvasGroups(canvasRef.current) : [];
-                const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps);
+                const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps, cardStatusesRef.current);
                 renderWidgetBody(widgetParamPopover.el, widgetParamPopover.defId, data, next);
+                renderWidgetBodyAsync(widgetParamPopover.el, widgetParamPopover.defId, data, next);
                 // Re-apply card badges — handles show_badges toggle and badge_mode changes instantly
                 applyWidgetDecorators(widgetParamPopover.el);
                 setWidgetParamPopover(p => p ? { ...p, currentParams: next } : null);
@@ -2887,7 +3568,7 @@ export function DeckView() {
 
         {/* List view — always mounted, hidden when on workshop tab */}
         <div
-          className="flex-1 overflow-y-auto bg-background"
+          className="absolute inset-0 overflow-y-auto bg-background"
           style={{ display: tab === 'list' ? undefined : 'none' }}
         >
             <div className="max-w-4xl mx-auto px-8 py-6">
@@ -2898,10 +3579,161 @@ export function DeckView() {
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center justify-between mb-4">
                     <h2 className="font-headline-md text-lg text-on-surface">Deck List</h2>
                     <span className="text-label-sm text-on-surface-variant/40">{totalCards} cards</span>
                   </div>
+
+                  {/* Mana base analysis */}
+                  {deck?.format === 'commander' && (() => {
+                    const COLORS = ['W','U','B','R','G'] as const;
+                    const COLOR_META: Record<string, { name: string; bg: string; text: string }> = {
+                      W: { name: 'White', bg: '#f0d870', text: '#1a1200' },
+                      U: { name: 'Blue',  bg: '#4a7cc9', text: '#fff'   },
+                      B: { name: 'Black', bg: '#5a5a5a', text: '#fff'   },
+                      R: { name: 'Red',   bg: '#c0392b', text: '#fff'   },
+                      G: { name: 'Green', bg: '#27ae60', text: '#fff'   },
+                    };
+                    // Count pips per color across non-land spells
+                    const pipCount: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0 };
+                    let totalNonLandSpells = 0;
+                    for (const dc of deckCards) {
+                      const detail = cardDetails[dc.oracle_id];
+                      if (!detail) continue;
+                      const tl = (detail.type_line || '').toLowerCase();
+                      if (/^land/.test(tl)) continue;
+                      totalNonLandSpells += dc.quantity || 1;
+                      const mc = detail.mana_cost || '';
+                      const matches = mc.matchAll(/\{([WUBRG])\}/g);
+                      for (const m of matches) {
+                        const c = m[1];
+                        if (c in pipCount) pipCount[c] += (dc.quantity || 1);
+                      }
+                    }
+                    const totalPips = Object.values(pipCount).reduce((s, v) => s + v, 0);
+                    if (totalPips === 0) return null;
+
+                    // Recommended sources: Frank Karsten formula scaled to 99-card (Commander)
+                    // Base: need ~14 sources per color that appears on ≥12 cards; ~13 for ≥8; etc.
+                    const recSources = (pips: number): number => {
+                      if (pips === 0) return 0;
+                      const fraction = pips / Math.max(totalPips, 1);
+                      const targetLands = 37; // standard commander land count
+                      return Math.round(fraction * targetLands);
+                    };
+
+                    // Count land sources per color (basic + any land with matching color identity)
+                    const landSources: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0 };
+                    const landCards = deckCards.filter(dc => {
+                      const tl = (cardDetails[dc.oracle_id]?.type_line || '').toLowerCase();
+                      return /^land/.test(tl);
+                    });
+                    const totalLands = landCards.reduce((s, dc) => s + (dc.quantity || 1), 0);
+                    for (const dc of landCards) {
+                      const ci = cardDetails[dc.oracle_id]?.color_identity;
+                      if (!ci) continue;
+                      const colors: string[] = Array.isArray(ci) ? (ci as string[])
+                        : (() => { try { return JSON.parse(ci as string) as string[]; } catch { return []; } })();
+                      for (const c of colors) {
+                        if (c in landSources) landSources[c] += dc.quantity || 1;
+                      }
+                    }
+
+                    const activeColors = COLORS.filter(c => pipCount[c] > 0);
+                    if (!activeColors.length) return null;
+
+                    return (
+                      <div className="mb-6 p-4 rounded-xl border border-white/5 bg-surface/40">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/40">Mana Base Analysis</h3>
+                          <span className="text-[10px] text-on-surface-variant/30">{totalLands} lands</span>
+                        </div>
+                        <div className="grid gap-2">
+                          {activeColors.map(c => {
+                            const meta = COLOR_META[c];
+                            const pips = pipCount[c];
+                            const rec  = recSources(pips);
+                            const have = landSources[c];
+                            const delta = have - rec;
+                            const status = delta >= 0 ? 'ok' : delta >= -2 ? 'low' : 'critical';
+                            return (
+                              <div key={c} className="flex items-center gap-3">
+                                <div
+                                  className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black flex-shrink-0"
+                                  style={{ background: meta.bg, color: meta.text }}
+                                >
+                                  {c}
+                                </div>
+                                <div className="flex-1">
+                                  <div className="flex items-center justify-between mb-0.5">
+                                    <span className="text-[10px] text-on-surface/60">{pips} pip{pips !== 1 ? 's' : ''}</span>
+                                    <span
+                                      className="text-[10px] font-bold"
+                                      style={{ color: status === 'ok' ? '#4ade80' : status === 'low' ? '#fbbf24' : '#f87171' }}
+                                    >
+                                      {have} / {rec} sources
+                                      {delta < 0 ? ` (${delta})` : ''}
+                                    </span>
+                                  </div>
+                                  <div className="h-1 rounded-full overflow-hidden bg-white/5">
+                                    <div
+                                      className="h-full rounded-full transition-all"
+                                      style={{
+                                        width:      `${Math.min(100, rec > 0 ? (have / rec) * 100 : 0)}%`,
+                                        background: status === 'ok' ? '#4ade80' : status === 'low' ? '#fbbf24' : '#f87171',
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {totalLands < 33 && (
+                          <p className="text-[10px] text-orange-400/70 mt-3 flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[12px]">warning</span>
+                            Only {totalLands} lands — Commander decks typically need 36–38
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Export toolbar — only shown when deck is mounted and statuses loaded */}
+                  {deck?.recipient_id && Object.keys(cardStatuses).length > 0 && (() => {
+                    const counts = { missing: 0, proxy: 0, inCollection: 0, inRecipient: 0 };
+                    for (const dc of deckCards) {
+                      const st = cardStatuses[dc.oracle_id];
+                      if (st === 'missing') counts.missing += dc.quantity || 1;
+                      else if (st === 'proxy') counts.proxy += dc.quantity || 1;
+                      else if (st === 'in-collection') counts.inCollection += dc.quantity || 1;
+                      else if (st === 'in-recipient' || st === 'in-recipient-diff') counts.inRecipient += dc.quantity || 1;
+                    }
+                    return (
+                      <div className="flex flex-wrap items-center gap-2 mb-5 p-3 rounded-xl bg-surface border border-white/5">
+                        <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap gap-y-1">
+                          {counts.inRecipient > 0 && <span className="flex items-center gap-1.5 text-[11px]"><span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" /><span className="text-green-400">{counts.inRecipient} assembled</span></span>}
+                          {counts.inCollection > 0 && <span className="flex items-center gap-1.5 text-[11px]"><span className="w-2 h-2 rounded-full bg-yellow-500 flex-shrink-0" /><span className="text-yellow-400">{counts.inCollection} in collection</span></span>}
+                          {counts.proxy > 0 && <span className="flex items-center gap-1.5 text-[11px]"><span className="w-2 h-2 rounded-full bg-teal-300 flex-shrink-0" /><span className="text-teal-300">{counts.proxy} proxied</span></span>}
+                          {counts.missing > 0 && <span className="flex items-center gap-1.5 text-[11px]"><span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" /><span className="text-red-400">{counts.missing} missing</span></span>}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button onClick={() => handleExportMissing(false)} title="Copy missing cards list"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface-container border border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all text-[11px] font-bold">
+                            <span className="material-symbols-outlined text-[13px]">content_copy</span>Missing
+                          </button>
+                          <button onClick={() => handleExportMissing(true)} title="Copy missing + proxy cards list"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface-container border border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all text-[11px] font-bold">
+                            <span className="material-symbols-outlined text-[13px]">content_copy</span>Missing + Proxies
+                          </button>
+                          <button onClick={handleAddMissingToWishlist} title="Add missing cards to wishlist"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all text-[11px] font-bold">
+                            <span className="material-symbols-outlined text-[13px]">bookmark_add</span>Wishlist
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {CATEGORY_ORDER.map(cat => {
                     const items = listGroups[cat];
                     if (!items?.length) return null;
@@ -2915,13 +3747,34 @@ export function DeckView() {
                           {items.map(dc => {
                             const detail = cardDetails[dc.oracle_id];
                             const name = detail?.name || dc.oracle_id;
+                            const cardLegality = deck?.format ? ((detail?.full_data as any)?.legalities?.[deck.format] || 'not_legal') : null;
+                            const isBannedHere = cardLegality === 'banned';
+                            const statusDot: Record<string, { color: string; title: string }> = {
+                              'in-recipient':      { color: '#22c55e', title: 'In recipient (same print)' },
+                              'in-recipient-diff': { color: '#86efac', title: 'In recipient (different print)' },
+                              'proxy':             { color: '#6ee7b7', title: 'Proxy' },
+                              'in-collection':     { color: '#eab308', title: 'In collection, not in recipient' },
+                              'missing':           { color: '#ef4444', title: 'Not in collection' },
+                            };
+                            const st = cardStatuses[dc.oracle_id];
+                            const dot = st ? statusDot[st] : null;
+                            const isProxy = !!dc.is_proxy;
                             return (
                               <div key={dc.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.03] group">
+                                {/* Status dot */}
+                                {dot ? (
+                                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dot.color, boxShadow: `0 0 5px ${dot.color}55` }} title={dot.title} />
+                                ) : (
+                                  <div className="w-2 h-2 flex-shrink-0" />
+                                )}
                                 {/* Qty controls */}
                                 <div className="flex items-center gap-1 flex-shrink-0">
                                   <button onClick={() => handleUpdateQty(dc.id, (dc.quantity || 1) - 1, dc.oracle_id)}
                                     className="w-5 h-5 rounded text-on-surface-variant/40 hover:text-on-surface hover:bg-white/10 flex items-center justify-center transition-all text-sm leading-none">−</button>
-                                  <span className="text-label-md font-bold text-primary w-5 text-center">{dc.quantity || 1}</span>
+                                  <QtyInput
+                                    value={dc.quantity || 1}
+                                    onChange={v => handleUpdateQty(dc.id, v, dc.oracle_id)}
+                                  />
                                   <button onClick={() => handleUpdateQty(dc.id, (dc.quantity || 1) + 1, dc.oracle_id)}
                                     className="w-5 h-5 rounded text-on-surface-variant/40 hover:text-on-surface hover:bg-white/10 flex items-center justify-center transition-all text-sm leading-none">+</button>
                                 </div>
@@ -2933,6 +3786,9 @@ export function DeckView() {
                                 >
                                   {name}
                                 </span>
+                                {isBannedHere && (
+                                  <span className="text-[8px] font-black px-1.5 py-0.5 rounded ml-1.5 uppercase tracking-wide flex-shrink-0" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }} title={`Banned in ${deck?.format}`}>BANNED</span>
+                                )}
                                 {detail && getImageUrl(detail) && (
                                   <div className="absolute left-0 bottom-full mb-2 z-50 pointer-events-none opacity-0 group-hover/name:opacity-100 transition-opacity duration-150 delay-300">
                                     <img
@@ -2961,6 +3817,14 @@ export function DeckView() {
                                 >
                                   <span className="material-symbols-outlined text-[14px]">move_down</span>
                                 </button>
+                                {/* Proxy toggle */}
+                                <button
+                                  onClick={() => handleToggleProxy(dc.id, dc.is_proxy)}
+                                  title={isProxy ? 'Remove proxy mark' : 'Mark as proxy'}
+                                  className={`w-6 h-6 rounded flex items-center justify-center transition-all flex-shrink-0 ${isProxy ? 'text-teal-300' : 'opacity-0 group-hover:opacity-100 text-on-surface-variant/30 hover:text-teal-300'} hover:bg-teal-500/10`}
+                                >
+                                  <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: isProxy ? "'FILL' 1" : "'FILL' 0" }}>content_copy</span>
+                                </button>
                                 {/* Remove */}
                                 <button onClick={() => handleRemoveCard(dc.id, dc.oracle_id)}
                                   className="opacity-0 group-hover:opacity-100 w-6 h-6 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-red-400 hover:bg-red-500/10 transition-all flex-shrink-0">
@@ -2977,27 +3841,322 @@ export function DeckView() {
               )}
             </div>
           </div>
+
+          {/* Card search panel — absolute within canvas area, below header/arrangement bar */}
+          {/* Missing cards panel */}
+          {tab === 'missing' && (
+            <div className="absolute inset-0 overflow-y-auto bg-background">
+              <div className="max-w-3xl mx-auto px-8 py-6">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="font-headline-md text-lg text-on-surface font-bold">Missing Cards</h2>
+                    <p className="text-[11px] text-on-surface-variant/45 mt-0.5">
+                      {missingCards.length} card{missingCards.length !== 1 ? 's' : ''} not in your collection
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xl font-black tabular-nums" style={{ color: '#f87171' }}>
+                      ${missingCards.reduce((s, c) => s + c.totalUsd, 0).toFixed(2)}
+                    </div>
+                    <div className="text-[10px] text-on-surface-variant/35 mt-0.5">estimated cost to complete</div>
+                  </div>
+                </div>
+
+                {/* Action bar */}
+                <div className="flex items-center gap-2 mb-5">
+                  <button
+                    onClick={() => handleExportMissing(false)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container border border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all text-[11px] font-bold"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">content_copy</span>Copy List
+                  </button>
+                  <button
+                    onClick={handleAddMissingToWishlist}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all text-[11px] font-bold"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">bookmark_add</span>Add All to Wishlist
+                  </button>
+                </div>
+
+                {/* Card table */}
+                <div className="rounded-xl border border-white/5 overflow-hidden">
+                  <div className="grid text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/30 px-4 py-2 border-b border-white/5" style={{ gridTemplateColumns: '1fr 140px 80px 72px' }}>
+                    <span>Card</span><span>Type</span><span className="text-right">Price</span><span className="text-right">Action</span>
+                  </div>
+                  {missingCards.map(({ dc, detail, usd }) => {
+                    const name = detail?.name || dc.oracle_id;
+                    const artUrl = (() => {
+                      const fd = (detail?.full_data || {}) as Record<string, any>;
+                      return fd.image_uris?.art_crop || fd.card_faces?.[0]?.image_uris?.art_crop || '';
+                    })();
+                    return (
+                      <div
+                        key={dc.id}
+                        className="grid items-center px-4 py-2.5 border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors group"
+                        style={{ gridTemplateColumns: '1fr 140px 80px 72px' }}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {artUrl && (
+                            <div className="w-10 h-7 rounded overflow-hidden flex-shrink-0">
+                              <img src={artUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+                            </div>
+                          )}
+                          <button
+                            className="text-[12px] font-semibold text-on-surface truncate hover:text-primary transition-colors text-left"
+                            onClick={() => setDetailOracleId(dc.oracle_id)}
+                          >
+                            {dc.quantity && dc.quantity > 1 ? `${dc.quantity}× ` : ''}{name}
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-on-surface-variant/35 truncate">{detail?.type_line || ''}</span>
+                        <span className="text-[12px] font-bold tabular-nums text-right" style={{ color: usd > 20 ? '#f87171' : usd > 5 ? '#f2ca83' : 'rgba(255,255,255,0.5)' }}>
+                          {usd > 0 ? `$${usd.toFixed(2)}` : '—'}
+                        </span>
+                        <div className="flex justify-end">
+                          <button
+                            onClick={() => window.libraryAPI.addToWishlist?.({ oracleId: dc.oracle_id, quantity: dc.quantity || 1 }).catch(() => {})}
+                            className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold transition-all"
+                            style={{ background: 'rgba(242,202,131,0.08)', border: '1px solid rgba(242,202,131,0.15)', color: 'rgba(242,202,131,0.6)' }}
+                            title="Add to wishlist"
+                          >
+                            <span className="material-symbols-outlined text-[11px]">bookmark_add</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* ── Hand simulator ── */}
+          {tab === 'simulate' && (
+            <div className="absolute inset-0 overflow-y-auto bg-background">
+              <div className="max-w-4xl mx-auto px-8 py-6">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="font-headline-md text-lg text-on-surface font-bold">Hand Simulator</h2>
+                    <p className="text-[11px] text-on-surface-variant/45 mt-0.5">
+                      {simLibSize > 0 ? `${simLibSize} cards remaining in library` : 'Draw an opening hand to get started'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setSimMulligans(0); drawSimHand(7); }}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all"
+                      style={{ background: 'rgba(242,202,131,0.12)', border: '1px solid rgba(242,202,131,0.25)', color: '#f2ca83' }}
+                    >
+                      <span className="material-symbols-outlined text-[15px]">casino</span>
+                      Draw 7
+                    </button>
+                    {simHand.length > 0 && (
+                      <button
+                        onClick={() => {
+                          const next = simMulligans + 1;
+                          setSimMulligans(next);
+                          drawSimHand(Math.max(1, 7 - next));
+                        }}
+                        disabled={7 - simMulligans <= 1}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all disabled:opacity-30"
+                        style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)', color: '#fbbf24' }}
+                      >
+                        <span className="material-symbols-outlined text-[15px]">refresh</span>
+                        Mulligan {simMulligans > 0 ? `(${7 - simMulligans} cards)` : ''}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {simMulligans > 0 && (
+                  <p className="text-[11px] text-on-surface-variant/40 mb-4">
+                    Mulligan #{simMulligans} — drew {Math.max(1, 7 - simMulligans)} cards (London mulligan)
+                  </p>
+                )}
+
+                {simHand.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                    <span className="material-symbols-outlined text-[56px] text-on-surface-variant/10">casino</span>
+                    <p className="text-[13px] text-on-surface-variant/30">Click "Draw 7" to simulate your opening hand</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
+                      {simHand.map((card, i) => (
+                        <div key={i} className="flex flex-col gap-1.5">
+                          <button
+                            onClick={() => setDetailOracleId(card.oracleId)}
+                            className="rounded-xl overflow-hidden hover:ring-1 hover:ring-primary/40 transition-all"
+                            style={{ aspectRatio: '488/680', background: '#1a1d22' }}
+                          >
+                            {card.imgUrl ? (
+                              <img src={card.imgUrl} alt={card.name} className="w-full h-full object-cover" loading="lazy" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <span className="material-symbols-outlined text-[32px] text-white/10">playing_cards</span>
+                              </div>
+                            )}
+                          </button>
+                          <p className="text-[10px] text-on-surface/70 text-center truncate px-1" title={card.name}>{card.name}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Hand analysis */}
+                    <div className="mt-6 grid grid-cols-3 gap-3">
+                      {(() => {
+                        const landCount = simHand.filter(c => c.typeLine.toLowerCase().includes('land')).length;
+                        const nonLandCount = simHand.length - landCount;
+                        const avgCmc = simHand.reduce((s, c) => {
+                          const m = c.manaCost.replace(/[^0-9WUBRG]/g, '');
+                          const generic = parseInt(m) || 0;
+                          const pips = (m.match(/[WUBRG]/g) || []).length;
+                          return s + generic + pips;
+                        }, 0) / Math.max(1, nonLandCount);
+                        return (
+                          <>
+                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                              <p className="text-[22px] font-black tabular-nums" style={{ color: landCount >= 2 && landCount <= 4 ? '#4ade80' : '#f87171' }}>{landCount}</p>
+                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Lands</p>
+                            </div>
+                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                              <p className="text-[22px] font-black tabular-nums text-on-surface">{nonLandCount}</p>
+                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Spells</p>
+                            </div>
+                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                              <p className="text-[22px] font-black tabular-nums text-primary">{avgCmc.toFixed(1)}</p>
+                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Avg CMC</p>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Combos panel ── */}
+          {tab === 'combos' && (
+            <div className="absolute inset-0 overflow-y-auto bg-background">
+              <div className="max-w-3xl mx-auto px-8 py-6">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="font-headline-md text-lg text-on-surface font-bold">Combo Detection</h2>
+                    <p className="text-[11px] text-on-surface-variant/45 mt-0.5">Powered by Commander Spellbook</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setCombosStatus('loading');
+                      try {
+                        const names = deckCards
+                          .filter(dc => dc.board !== 'sideboard')
+                          .map(dc => cardDetails[dc.oracle_id]?.name)
+                          .filter((n): n is string => !!n);
+                        const results = await window.cardsAPI.fetchSpellbookCombos({ cardNames: names });
+                        setCombos(results || []);
+                        setCombosStatus('done');
+                      } catch { setCombosStatus('error'); }
+                    }}
+                    disabled={combosStatus === 'loading'}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all disabled:opacity-40"
+                    style={{ background: 'rgba(192,132,252,0.12)', border: '1px solid rgba(192,132,252,0.25)', color: '#c084fc' }}
+                  >
+                    {combosStatus === 'loading' ? (
+                      <><span className="material-symbols-outlined text-[15px] animate-spin">sync</span>Scanning…</>
+                    ) : (
+                      <><span className="material-symbols-outlined text-[15px]">auto_fix_high</span>Find Combos</>
+                    )}
+                  </button>
+                </div>
+
+                {combosStatus === 'idle' && (
+                  <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                    <span className="material-symbols-outlined text-[56px] text-on-surface-variant/10">auto_fix_high</span>
+                    <p className="text-[13px] text-on-surface-variant/30">Click "Find Combos" to detect combos in your deck</p>
+                  </div>
+                )}
+
+                {combosStatus === 'done' && combos.length === 0 && (
+                  <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                    <span className="material-symbols-outlined text-[56px] text-on-surface-variant/10">search_off</span>
+                    <p className="text-[13px] text-on-surface-variant/30">No combos found in this deck</p>
+                  </div>
+                )}
+
+                {combosStatus === 'error' && (
+                  <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                    <p className="text-[13px] text-red-400/70">Failed to fetch combos — check your connection</p>
+                  </div>
+                )}
+
+                {combosStatus === 'done' && combos.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-on-surface-variant/40 mb-4">{combos.length} combo{combos.length !== 1 ? 's' : ''} found</p>
+                    {combos.map(combo => (
+                      <div key={combo.id} className="rounded-xl overflow-hidden" style={{ background: 'rgba(192,132,252,0.05)', border: '1px solid rgba(192,132,252,0.15)' }}>
+                        <div className="px-4 py-2 flex items-center gap-2 flex-wrap" style={{ background: 'rgba(192,132,252,0.08)' }}>
+                          {combo.cards.map((c, i) => (
+                            <span key={i}>
+                              <button
+                                onClick={() => setDetailOracleId(deckCards.find(dc => cardDetails[dc.oracle_id]?.name === c)?.oracle_id ?? null)}
+                                className="text-[11px] font-bold text-purple-300 hover:text-purple-200 transition-colors"
+                              >{c}</button>
+                              {i < combo.cards.length - 1 && <span className="text-[10px] text-on-surface-variant/30 mx-1">+</span>}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="px-4 py-2.5">
+                          {combo.results.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-1.5">
+                              {combo.results.map((r, i) => (
+                                <span key={i} className="text-[9px] px-2 py-0.5 rounded-full font-bold" style={{ background: 'rgba(192,132,252,0.12)', color: '#c084fc', border: '1px solid rgba(192,132,252,0.2)' }}>{r}</span>
+                              ))}
+                            </div>
+                          )}
+                          {combo.description && (
+                            <p className="text-[11px] text-on-surface/55 leading-snug">{combo.description.slice(0, 200)}{combo.description.length > 200 ? '…' : ''}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <CardSearchPanel
+            ref={searchPanelRef}
+            isOpen={searchOpen && !detailOracleId}
+            onClose={() => setSearchOpen(false)}
+            title="Add Card"
+            onSelectCard={handleAddCard}
+            onAddAll={handleAddAll}
+          />
+
+          {/* Card detail panel — absolute within canvas area */}
+          <CardDetailPanel
+            oracleId={detailOracleId}
+            deckId={deckId}
+            addBoard="main"
+            deckFormat={deck?.format}
+            onClose={() => setDetailOracleId(null)}
+            onAddToDeck={handleAddFromDetail}
+            onCoverChange={(url) => setDeck(prev => prev ? { ...prev, cover_image_url: url } : prev)}
+            onPrintingChange={handlePrintingChange}
+            onFindSimilar={(query) => {
+              setDetailOracleId(null);
+              setSearchOpen(true);
+              setTimeout(() => searchPanelRef.current?.setFilters({ query }), 50);
+            }}
+          />
+
+        </div>{/* end canvas+list wrapper */}
       </main>
-
-      {/* Card search panel */}
-      <CardSearchPanel
-        isOpen={searchOpen && !detailOracleId}
-        onClose={() => setSearchOpen(false)}
-        title="Add Card"
-        onSelectCard={handleAddCard}
-        onAddAll={handleAddAll}
-        showColorFilters
-      />
-
-      {/* Card detail panel */}
-      <CardDetailPanel
-        oracleId={detailOracleId}
-        deckId={deckId}
-        addBoard="main"
-        onClose={() => setDetailOracleId(null)}
-        onAddToDeck={handleAddFromDetail}
-        onCoverChange={(url) => setDeck(prev => prev ? { ...prev, cover_image_url: url } : prev)}
-      />
 
       {/* Deck settings modal */}
       <DeckSettingsModal

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Deck } from '../types/electron';
 import { ManaSymbol } from './ManaSymbol';
+import { useLibraryStore } from '../store/useLibraryStore';
 
 const FORMATS = [
   { value: 'commander', label: 'Commander' },
@@ -22,13 +23,19 @@ interface DeckSettingsModalProps {
   onSave: (updates: Partial<Deck>) => Promise<void>;
 }
 
+const RECIPIENT_TYPE_LABELS: Record<string, string> = {
+  binder: 'Binder', box: 'Box', deck_box: 'Deck Box', other: 'Other',
+};
+
 export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSettingsModalProps) {
+  const { recipients, mountDeck, unmountDeck } = useLibraryStore();
   const [name, setName] = useState('');
   const [format, setFormat] = useState('commander');
   const [powerLevel, setPowerLevel] = useState(5);
   const [isFavorite, setIsFavorite] = useState(false);
   const [selectedColors, setSelectedColors] = useState<Set<string>>(new Set());
   const [description, setDescription] = useState('');
+  const [recipientId, setRecipientId] = useState<number | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -38,6 +45,7 @@ export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSetting
     setPowerLevel(deck.power_level ?? 5);
     setIsFavorite(!!deck.is_favorite);
     setDescription(deck.description || '');
+    setRecipientId(deck.recipient_id ?? null);
     const ci = (deck.color_identity || '').toUpperCase();
     setSelectedColors(new Set(ci.split('').filter(c => 'WUBRG'.includes(c))));
     setTimeout(() => nameRef.current?.focus(), 50);
@@ -57,10 +65,17 @@ export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSetting
       name: name.trim(),
       format,
       power_level: powerLevel,
-      is_favorite: isFavorite ? 1 : 0,
+      is_favorite: isFavorite,
       color_identity: 'WUBRG'.split('').filter(c => selectedColors.has(c)).join(''),
       description: description.trim() || undefined,
     });
+    if (deck) {
+      const prev = deck.recipient_id ?? null;
+      if (recipientId !== prev) {
+        if (recipientId) await mountDeck({ id: deck.id, recipientId });
+        else await unmountDeck({ id: deck.id });
+      }
+    }
     onClose();
   };
 
@@ -137,7 +152,6 @@ export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSetting
             />
             <span className="text-body-md text-on-surface-variant">Mark as favorite</span>
           </label>
-          {/* #27 – Description field (decks.description column exists in DB) */}
           <div>
             <label className="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Description</label>
             <textarea
@@ -147,6 +161,27 @@ export function DeckSettingsModal({ deck, isOpen, onClose, onSave }: DeckSetting
               placeholder="Optional notes about this deck…"
               className="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md text-on-surface focus:outline-none focus:border-primary/50 transition-all resize-none placeholder:text-on-surface-variant/30"
             />
+          </div>
+          <div>
+            <label className="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Physical Location</label>
+            <select
+              value={recipientId ?? ''}
+              onChange={e => setRecipientId(e.target.value ? Number(e.target.value) : null)}
+              className="w-full bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md text-on-surface focus:outline-none focus:border-primary/50 transition-all"
+            >
+              <option value="" className="bg-surface-container text-on-surface-variant">Virtual (no physical location)</option>
+              {recipients.map(r => (
+                <option key={r.id} value={r.id} className="bg-surface-container text-on-surface">
+                  {r.name} — {RECIPIENT_TYPE_LABELS[r.type] ?? r.type}
+                </option>
+              ))}
+            </select>
+            {recipientId && (
+              <p className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
+                <span className="material-symbols-outlined text-[11px]" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                Deck will be marked as mounted
+              </p>
+            )}
           </div>
         </div>
         <div className="flex gap-3 mt-8">

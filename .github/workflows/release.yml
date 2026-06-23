@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# ── CONFIGURE THIS ────────────────────────────────────────────────────────────
+env:
+  ARSENAL_REPO: YOUR_GITHUB_USERNAME/karn   # e.g. jdoe/karn
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            arsenal_platform: win
+          - os: macos-latest
+            platform: mac
+            arsenal_platform: mac
+          - os: ubuntu-latest
+            platform: linux
+            arsenal_platform: linux
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download latest karn-arsenal release
+        shell: bash
+        run: |
+          # Get latest karn-arsenal release asset URL
+          ASSET_URL=$(curl -s https://api.github.com/repos/${{ env.ARSENAL_REPO }}/releases/latest \
+            | python3 -c "import sys,json; data=json.load(sys.stdin); \
+              assets=[a for a in data['assets'] if '${{ matrix.arsenal_platform }}' in a['name']]; \
+              print(assets[0]['browser_download_url'] if assets else '')")
+          if [ -z "$ASSET_URL" ]; then
+            echo "No karn-arsenal asset found for ${{ matrix.arsenal_platform }}, using empty resources"
+          else
+            curl -L "$ASSET_URL" -o arsenal.zip
+            unzip -o arsenal.zip -d resources/
+            echo "karn-arsenal extracted to resources/arsenal"
+          fi
+
+      - name: Build Vite frontend
+        run: npm run build
+
+      - name: Build Electron installer
+        run: npm run dist:${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist-electron/**/*.{exe,dmg,AppImage}
+          generate_release_notes: true

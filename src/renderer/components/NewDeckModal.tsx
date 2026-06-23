@@ -30,6 +30,7 @@ export function NewDeckModal({ isOpen, onClose, defaultFolderId }: NewDeckModalP
   const [commanderSearching, setCommanderSearching] = useState(false);
   const [selectedCommander, setSelectedCommander]   = useState<Card | null>(null);
   const [showDropdown, setShowDropdown]         = useState(false);
+  const [popularCommanders, setPopularCommanders] = useState<Card[]>([]);
   const commanderTimerRef = useRef<ReturnType<typeof setTimeout>>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -42,6 +43,11 @@ export function NewDeckModal({ isOpen, onClose, defaultFolderId }: NewDeckModalP
       window.settingsAPI.get().then(s => {
         if (s?.defaultFormat) setFormat(s.defaultFormat as string);
       }).catch(() => {});
+      // Load popular commanders from local DB by edhrec_rank
+      window.cardsAPI.search({ q: 'legendary creature', pageSize: 12, types: ['Creature'] }).then(res => {
+        const cards = (res?.cards || []).filter((c: Card) => (c.type_line || '').toLowerCase().includes('legendary'));
+        setPopularCommanders(cards.slice(0, 8));
+      }).catch(() => {});
     } else {
       setName('');
       setFormat('commander');
@@ -50,6 +56,7 @@ export function NewDeckModal({ isOpen, onClose, defaultFolderId }: NewDeckModalP
       setCommanderSearching(false);
       setSelectedCommander(null);
       setShowDropdown(false);
+      setPopularCommanders([]);
     }
   }, [isOpen]);
 
@@ -244,6 +251,31 @@ export function NewDeckModal({ isOpen, onClose, defaultFolderId }: NewDeckModalP
                           </div>
                         </button>
                       ))}
+                    </div>
+                  )}
+
+                  {/* Popular commander suggestions (only when query is empty) */}
+                  {!commanderQuery && popularCommanders.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-on-surface-variant/25 mb-1.5">Suggestions</p>
+                      <div className="flex flex-wrap gap-1">
+                        {popularCommanders.map(card => {
+                          const fd = card.full_data as any;
+                          const artUrl = fd?.image_uris?.art_crop || fd?.card_faces?.[0]?.image_uris?.art_crop || '';
+                          return (
+                            <button
+                              key={card.oracle_id}
+                              type="button"
+                              onMouseDown={() => selectCommander(card)}
+                              className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-white/10 transition-all text-left"
+                              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+                            >
+                              {artUrl && <img src={artUrl} alt="" className="w-5 h-5 rounded-sm object-cover flex-shrink-0" />}
+                              <span className="text-[10px] text-on-surface/70 truncate max-w-[80px]">{card.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                 </div>

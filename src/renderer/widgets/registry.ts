@@ -33,6 +33,8 @@ export interface WidgetData {
    * Widgets should fall back to card-type grouping when this is empty.
    */
   groups: WidgetGroup[];
+  /** Per-oracle-id collection status (only populated for mounted decks). */
+  cardStatuses?: Record<string, string>;
 }
 
 /** One configurable parameter on a widget (instance-overridable). */
@@ -61,7 +63,15 @@ export interface WidgetDef {
   width?: number;        // default pixel width (default 220)
   /** Configurable parameters; users can override per-instance via the gear popover. */
   params?: WidgetParam[];
-  code: string;          // JS function body: receives (data: WidgetData, params: WidgetParams), must return HTML string
+  code: string;          // JS function body: receives (data: WidgetData, params: WidgetParams, asyncData: unknown), must return HTML string
+  /**
+   * Optional async data loader called before the second render pass.
+   * Receives current data + resolved params; the return value is passed as the
+   * third `asyncData` argument to the widget `code` function.
+   * Use for widgets that need network data (EDHREC, role tags, etc.).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  asyncWidgetData?: (data: WidgetData, params: WidgetParams) => Promise<any>;
   /**
    * Optional inline card decorator.  When present this widget also renders badges
    * on every canvas card — no separate CardDecoratorDef entry needed.
@@ -134,22 +144,22 @@ class WidgetRegistryClass {
    *
    * @param instanceParams - per-instance overrides (from dataset.widgetParams)
    */
-  render(id: string, data: WidgetData, instanceParams?: WidgetParams): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  render(id: string, data: WidgetData, instanceParams?: WidgetParams, asyncData?: any): string {
     const def = this.defs.get(id);
     if (!def) return `<p style="color:rgba(255,255,255,0.25);font-size:11px;padding:8px;text-align:center">Widget "${id}" not found</p>`;
     try {
       const params = this.resolveParams(def, instanceParams);
       // eslint-disable-next-line no-new-func
-      const fn = new Function('data', 'params', def.code) as (d: WidgetData, p: WidgetParams) => string;
-      const html = fn(data, params);
+      const fn = new Function('data', 'params', 'asyncData', def.code) as (d: WidgetData, p: WidgetParams, a: unknown) => string;
+      const html = fn(data, params, asyncData ?? null);
       return typeof html === 'string' ? html : '';
     } catch (err) {
       return `<p style="color:#f87171;font-size:11px;padding:8px">&#9888; ${String(err)}</p>`;
     }
   }
 
-  /** Run code string directly (for live preview — no registry entry needed).
-   *  @param paramDefs - param definitions (from the editor) used to apply defaults */
+  /** Run code string directly (for live preview — no registry entry needed). */
   renderCode(code: string, data: WidgetData, instanceParams?: WidgetParams, paramDefs?: WidgetParam[]): string {
     try {
       const params: WidgetParams = {};
@@ -158,8 +168,8 @@ class WidgetRegistryClass {
         params[p.key] = v !== undefined ? v : p.default;
       }
       // eslint-disable-next-line no-new-func
-      const fn = new Function('data', 'params', code) as (d: WidgetData, p: WidgetParams) => string;
-      const html = fn(data, params);
+      const fn = new Function('data', 'params', 'asyncData', code) as (d: WidgetData, p: WidgetParams, a: unknown) => string;
+      const html = fn(data, params, null);
       return typeof html === 'string' ? html : '';
     } catch (err) {
       return `<p style="color:#f87171;font-size:11px;padding:8px">&#9888; ${String(err)}</p>`;

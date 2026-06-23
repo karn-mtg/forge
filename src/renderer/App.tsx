@@ -1,5 +1,8 @@
 import { useEffect } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
+import { createLogger } from './utils/logger';
+
+const log = createLogger('app');
 import { AppLayout } from './layouts/AppLayout';
 import { Dashboard } from './pages/Dashboard';
 import { DeckView } from './pages/DeckView';
@@ -13,6 +16,8 @@ import { WidgetRegistry } from './widgets/registry';
 import type { WidgetDef } from './widgets/registry';
 import { CardDecoratorRegistry } from './widgets/overlayRegistry';
 import type { CardDecoratorDef } from './widgets/overlayRegistry';
+import { GlobalCardTooltip } from './components/GlobalCardTooltip';
+import { AIChatPanel } from './components/ai/AIChatPanel';
 // Register built-in overlays as a side-effect
 import './widgets/builtinOverlays';
 
@@ -31,6 +36,7 @@ export async function persistCustomDecorators(): Promise<void> {
 export function App() {
   // Load user-created widgets and decorators from settings into the registries on startup
   useEffect(() => {
+    log.info('App mounting — loading settings and custom registries');
     window.settingsAPI.get().then(s => {
       const custom = (s?.customWidgets as WidgetDef[] | undefined) || [];
       custom.forEach(w => {
@@ -44,11 +50,16 @@ export function App() {
           CardDecoratorRegistry.register({ ...d, readonly: false });
         }
       });
-    }).catch((err) => { console.error('Failed to load settings on startup:', err); });
+      log.info(`Settings loaded — ${custom.length} custom widgets, ${customDec.length} custom decorators`);
+    }).catch((err) => {
+      log.error('Failed to load settings on startup', err);
+    });
   }, []);
 
   return (
     <HashRouter>
+      <GlobalCardTooltip />
+      <AIChatPanel />
       <Routes>
         {/* DeckView has its own full layout (no AppLayout sidebar) */}
         <Route path="/deck/:id" element={<DeckView />} />

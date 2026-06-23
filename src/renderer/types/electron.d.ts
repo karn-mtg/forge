@@ -1,11 +1,21 @@
 // Types for window APIs exposed by preload.js
-
 export interface FolderNode {
   id: number;
   name: string;
   icon?: string;
   parent_id?: number | null;
   children: FolderNode[];
+}
+
+export type RecipientType = 'binder' | 'box' | 'deck_box' | 'other';
+export type CardStatus = 'in-recipient' | 'in-recipient-diff' | 'proxy' | 'in-collection' | 'missing';
+
+export interface Recipient {
+  id: number;
+  name: string;
+  type: RecipientType;
+  notes?: string | null;
+  created_at?: string;
 }
 
 export interface Deck {
@@ -24,14 +34,18 @@ export interface Deck {
   updated_at?: string;
   created_at?: string;
   card_count?: number;
+  recipient_id?: number | null;
+  recipient_name?: string | null;
+  recipient_type?: RecipientType | null;
 }
 
 export interface DeckCardEntry {
   id: number;
   oracle_id: string;
   scryfall_id?: string;
-  board: 'main' | 'sideboard' | 'commander';
+  board: 'main' | 'sideboard' | 'commander' | 'partner';
   quantity: number;
+  is_proxy?: number; // 0 or 1 from SQLite
 }
 
 export interface ActivityLogEntry {
@@ -47,6 +61,7 @@ export interface CollectionEntry {
   foil: boolean;
   condition: string;
   acquired_price?: number | null;
+  recipient_id?: number | null;
 }
 
 export interface WishlistEntry {
@@ -56,6 +71,18 @@ export interface WishlistEntry {
   quantity: number;
   priority?: number;
   note?: string;
+}
+
+export interface EdhrecCardEntry {
+  name: string;
+  pct: number | null;
+  synergy: number | null;
+  section: string;
+}
+
+export interface EdhrecPageResult {
+  numDecks: number;
+  cards: EdhrecCardEntry[];
 }
 
 /** Full Scryfall data stored alongside the card row */
@@ -95,22 +122,40 @@ export interface CardImage {
   image_uris?: { small?: string; normal?: string; large?: string };
 }
 
-export interface SyncProgress {
-  phase: string;
-  count?: number;
-  total?: number;
-  message?: string;
-  error?: string;
-}
-
 export interface Arrangement {
   id: number;
   name: string;
   canvas_json: string | null;
 }
 
+export interface AgentMemory {
+  key: string;
+  value: string;
+  updated_at: string;
+}
+
 declare global {
   interface Window {
+    aiAPI: {
+      checkClaude(): Promise<{ installed: boolean; version: string | null; loggedIn: boolean; method: string | null; expired?: boolean }>;
+      chat(text: string): Promise<void>;
+      abort(): Promise<void>;
+      clearSession(): Promise<void>;
+      getMemory(): Promise<AgentMemory[]>;
+      upsertMemory(args: { key: string; value: string }): Promise<void>;
+      deleteMemory(args: { key: string }): Promise<void>;
+      onToken(cb: (delta: string) => void): void;
+      onDone(cb: (data: { sessionId: string | null }) => void): void;
+      onError(cb: (msg: string) => void): void;
+      removeListeners(): void;
+      cardQuery(prompt: string): Promise<void>;
+      cardQueryAbort(): Promise<{ ok: boolean }>;
+      onCardQueryToken(cb: (delta: string) => void): void;
+      onCardQueryResult(cb: (data: { oracleIds: string[] }) => void): void;
+      onCardQueryDone(cb: () => void): void;
+      onCardQueryError(cb: (msg: string) => void): void;
+      removeCardQueryListeners(): void;
+    };
     electronAPI: {
       minimizeWindow(): void;
       maximizeWindow(): void;
@@ -121,6 +166,7 @@ declare global {
       createFolder(args: { name: string; parent_id?: number | null }): Promise<{ id: number }>;
       renameFolder(args: { id: number; name: string }): Promise<void>;
       deleteFolder(args: { id: number }): Promise<void>;
+      moveFolder(args: { id: number; parent_id: number | null }): Promise<void>;
       getDecks(args?: unknown): Promise<Deck[]>;
       createDeck(args: { name: string; format: string; folder_id?: number | null }): Promise<{ id: number }>;
       getDeck(args: { id: number }): Promise<Deck>;
@@ -132,6 +178,12 @@ declare global {
       removeCardFromDeck(args: { id: number }): Promise<void>;
       updateCardBoard(args: { id: number; board: string }): Promise<void>;
       updateCardQuantity(args: { id: number; quantity: number }): Promise<void>;
+      getRecipients(): Promise<Recipient[]>;
+      createRecipient(args: { name: string; type: RecipientType; notes?: string | null }): Promise<{ id: number }>;
+      updateRecipient(args: { id: number; name: string; type: RecipientType; notes?: string | null }): Promise<void>;
+      deleteRecipient(args: { id: number }): Promise<void>;
+      mountDeck(args: { id: number; recipientId: number }): Promise<void>;
+      unmountDeck(args: { id: number }): Promise<void>;
       getCollection(): Promise<CollectionEntry[]>;
       addToCollection(args: {
         oracleId: string;
@@ -142,7 +194,9 @@ declare global {
         acquiredPrice: number | null;
       }): Promise<{ id: number }>;
       removeFromCollection(args: { id: number }): Promise<void>;
-      updateCollectionEntry(args: { id: number; quantity: number; condition: string; foil: boolean; acquiredPrice: number | null }): Promise<void>;
+      updateCollectionEntry(args: { id: number; quantity: number; condition: string; foil: boolean; acquiredPrice: number | null; recipientId?: number | null }): Promise<void>;
+      getDeckCardStatuses(args: { deckId: number }): Promise<Record<string, CardStatus>>;
+      updateCardProxy(args: { id: number; isProxy: boolean }): Promise<void>;
       getWishlist(): Promise<WishlistEntry[]>;
       addToWishlist(args: {
         oracleId: string;
@@ -163,15 +217,39 @@ declare global {
       deleteArrangement(args: { id: number }): Promise<void>;
       saveArrangementCanvas(args: { id: number; canvasJson: string }): Promise<void>;
       loadArrangementCanvas(args: { id: number }): Promise<{ canvasJson?: string } | null>;
+      getDecksWithCard(args: { oracleId: string; excludeDeckId?: number }): Promise<{ id: number; name: string }[]>;
+      getMostUsedCards(args?: { limit?: number }): Promise<{ oracle_id: string; deck_count: number }[]>;
     };
     settingsAPI: {
       get(): Promise<Record<string, unknown>>;
       set(args: Record<string, unknown>): Promise<void>;
       openUserData(): Promise<void>;
+      openLogs(): Promise<void>;
+    };
+    arsenalAPI: {
+      getStatus(): Promise<{
+        installed: boolean;
+        version: string | null;
+        cardsDbVersion: string | null;
+        rulesDbVersion: string | null;
+        rulesInstalled: boolean;
+        cardsInstalled: boolean;
+      }>;
+      checkForUpdates(): Promise<{ current: string | null; latest: string | null; hasUpdate: boolean }>;
+      checkForDbUpdates(component: 'cards' | 'rules'): Promise<{ current: string | null; latest: string | null; hasUpdate: boolean }>;
+      checkAllForUpdates(): Promise<{
+        server: { current: string | null; latest: string | null; hasUpdate: boolean };
+        cards:  { current: string | null; latest: string | null; hasUpdate: boolean };
+        rules:  { current: string | null; latest: string | null; hasUpdate: boolean };
+      }>;
+      downloadUpdate(version: string): Promise<void>;
+      downloadDbUpdate(component: 'cards' | 'rules', version: string): Promise<void>;
+      restart(): Promise<void>;
+      onProgress(cb: (data: { component: 'server' | 'cards' | 'rules'; pct: number }) => void): void;
+      removeListeners(): void;
     };
     cardsAPI: {
-      getStatus(): Promise<{ synced: boolean; cardCount?: number }>;
-      startSync(args: { refresh?: boolean }): void;
+      getStatus(): Promise<{ cardCount?: number; last_updated_at?: string } | null>;
       /** Returns { cards: Card[] } */
       search(args: {
         q: string;
@@ -189,13 +267,30 @@ declare global {
         powerMax?: number | null;
         toughnessMin?: number | null;
         toughnessMax?: number | null;
+        maxPriceUsd?: number | null;
+        keywords?: string[];
+        loyaltyMin?: number | null;
+        loyaltyMax?: number | null;
+        colorCount?: number | null;
+        colorCountOp?: 'exactly' | 'at-most' | 'at-least';
+        layouts?: string[];
+        reserved?: boolean;
+        edhrecRankMax?: number | null;
+        producedMana?: string[];
       }): Promise<{ cards: Card[] }>;
       getCard(args: { oracleId: string }): Promise<Card | null>;
       getCardImages(args: { oracleId: string }): Promise<CardImage[]>;
       getCardsBatch(args: { oracleIds: string[] }): Promise<Card[]>;
-      /** Fetch EDHREC Commander inclusion % for a card name. Cached 24 h; returns null on error. */
+      getCardsByNames(args: { names: string[] }): Promise<Card[]>;
+      getRoleTags(args: { oracleIds: string[] }): Promise<Record<string, string[]>>;
+      searchByRole(args: { roles: string[]; pageSize?: number }): Promise<{ cards: Card[] }>;
+      /** Fetch EDHREC generic inclusion % for a card name. Cached 24 h. */
       fetchEdhrecData(args: { cardName: string }): Promise<{ pct: number | null }>;
-      onProgress(cb: (data: SyncProgress) => void): () => void;
+      /** Fetch EDHREC commander page — top cards + inclusion %. Cached 24 h. */
+      fetchEdhrecCommander(args: { commanderName: string }): Promise<EdhrecPageResult>;
+      /** Fetch EDHREC theme/archetype page. Cached 24 h. */
+      fetchEdhrecTheme(args: { theme: string }): Promise<EdhrecPageResult>;
+      fetchSpellbookCombos(args: { cardNames: string[] }): Promise<{ id: string; cards: string[]; results: string[]; description: string; identity: string }[]>;
     };
   }
 }

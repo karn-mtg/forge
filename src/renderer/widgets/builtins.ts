@@ -1,4 +1,5 @@
 import { WidgetRegistry } from './registry';
+import type { WidgetData, WidgetParams } from './registry';
 import type { OverlayCardData } from './overlayRegistry';
 
 export function registerBuiltinWidgets(): void {
@@ -432,5 +433,227 @@ return '';
         return result;
       },
     },
+  });
+
+  // ── Collection Status ────────────────────────────────────────────────────────
+  WidgetRegistry.register({
+    id: 'collection-status',
+    name: 'Collection Status',
+    description: 'Shows how many deck cards are physically in the recipient, in collection, or missing',
+    icon: 'inventory_2',
+    readonly: true,
+    width: 230,
+    params: [
+      { key: 'show_badges', label: 'Show card badges', type: 'boolean', default: true },
+    ],
+    code: `
+const st = data.cardStatuses || {};
+const all = data.allCards;
+if (!all.length) return '<p style="color:rgba(255,255,255,0.2);font-size:11px;text-align:center;padding:10px 0">No cards</p>';
+
+let inRecipient = 0, inRecipientDiff = 0, proxy = 0, inCollection = 0, missing = 0;
+all.forEach(c => {
+  const s = st[c.oracleId];
+  if (s === 'in-recipient')      inRecipient     += c.qty;
+  else if (s === 'in-recipient-diff') inRecipientDiff += c.qty;
+  else if (s === 'proxy')        proxy           += c.qty;
+  else if (s === 'in-collection') inCollection   += c.qty;
+  else                           missing         += c.qty;
+});
+
+const total = all.reduce((s, c) => s + c.qty, 0);
+const haveInRecipient = inRecipient + inRecipientDiff;
+const pct = total > 0 ? Math.round((haveInRecipient / total) * 100) : 0;
+const noMount = haveInRecipient === 0 && proxy === 0 && inCollection === 0 && missing === total;
+
+const row = (color, label, count) => count === 0 ? '' :
+  '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">'
+  + '<div style="width:9px;height:9px;border-radius:50%;background:' + color + ';flex-shrink:0;box-shadow:0 0 5px ' + color + '55"></div>'
+  + '<span style="font-size:11px;color:rgba(255,255,255,0.55);flex:1">' + label + '</span>'
+  + '<span style="font-size:12px;font-weight:700;color:#fff">' + count + '</span>'
+  + '</div>';
+
+const badgesOn = params.show_badges;
+let html = '<div style="font-family:-apple-system,sans-serif">';
+
+if (noMount) {
+  html += '<div style="font-size:10px;color:rgba(255,255,255,0.3);text-align:center;padding:6px 0">Deck not mounted to a recipient</div>';
+} else {
+  html += '<div style="margin-bottom:8px;display:flex;align-items:center;gap:4px">'
+    + '<span style="font-size:13px;font-weight:700;color:#f2ca83">' + pct + '%</span>'
+    + '<span style="font-size:10px;color:rgba(255,255,255,0.3)">assembled</span>'
+    + '</div>';
+  html += row('#22c55e', 'In recipient', inRecipient);
+  html += row('#86efac', 'In recipient (diff. print)', inRecipientDiff);
+  html += row('#6ee7b7', 'Proxy', proxy);
+  html += row('#eab308', 'In collection', inCollection);
+  html += row('#ef4444', 'Missing', missing);
+}
+
+html += '<div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.04);padding-top:6px;font-size:9px;color:rgba(255,255,255,0.22);display:flex;align-items:center;gap:4px">'
+  + '<span style="width:6px;height:6px;border-radius:50%;background:' + (badgesOn ? '#86efac' : 'rgba(255,255,255,0.12)') + ';flex-shrink:0"></span>'
+  + 'Card badges ' + (badgesOn ? 'on' : 'off')
+  + '</div>';
+html += '</div>';
+return html;
+`,
+
+    decorator: {
+      anchor: 'bl',
+      code: `
+const st = card.collectionStatus || '';
+const COLOR = {
+  'in-recipient':      '#22c55e',
+  'in-recipient-diff': '#86efac',
+  'proxy':             '#6ee7b7',
+  'in-collection':     '#eab308',
+  'missing':           '#ef4444',
+}[st];
+if (!COLOR || !params.show_badges) return '';
+const label = st === 'proxy' ? 'P' : '';
+return '<div style="display:flex;align-items:center;justify-content:center;width:' + (label ? '16px' : '10px') + ';height:' + (label ? '16px' : '10px') + ';border-radius:50%;background:' + COLOR + ';border:1.5px solid rgba(0,0,0,0.35);box-shadow:0 1px 5px rgba(0,0,0,0.6);font-size:8px;font-weight:900;color:#000;line-height:1">' + label + '</div>';
+`,
+    },
+  });
+
+  // ── Deck Roles ──────────────────────────────────────────────────────────────
+  WidgetRegistry.register({
+    id: 'deck-roles',
+    name: 'Deck Roles',
+    description: 'Ramp / draw / removal / wipe / tutor counts vs ideal EDH ratios. Uses local role-tag enrichment data.',
+    icon: 'schema',
+    readonly: true,
+    width: 255,
+    params: [
+      { key: 'show_ideal', label: 'Show ideal ratios', type: 'boolean', default: true },
+    ],
+
+    asyncWidgetData: async (data: WidgetData, _params: WidgetParams) => {
+      const oracleIds = data.cards.map(c => c.oracleId);
+      if (!oracleIds.length) return {};
+      try {
+        return await window.cardsAPI.getRoleTags({ oracleIds });
+      } catch {
+        return {};
+      }
+    },
+
+    code: `
+const roleTags = asyncData || {};
+const ROLES = [
+  { key: 'ramp',          label: 'Ramp',          ideal: 10, color: '#27ae60' },
+  { key: 'draw',          label: 'Card Draw',      ideal: 10, color: '#4a7cc9' },
+  { key: 'removal',       label: 'Removal',        ideal: 10, color: '#c0392b' },
+  { key: 'board_wipe',    label: 'Board Wipes',    ideal: 3,  color: '#f87171' },
+  { key: 'tutor',         label: 'Tutors',         ideal: 5,  color: '#c084fc' },
+  { key: 'counterspell',  label: 'Counterspells',  ideal: 0,  color: '#7eb8f7' },
+  { key: 'graveyard',     label: 'Graveyard',      ideal: 0,  color: '#86efac' },
+  { key: 'token',         label: 'Tokens',         ideal: 0,  color: '#f2ca83' },
+  { key: 'win_condition', label: 'Win Cons',        ideal: 2,  color: '#fbbf24' },
+];
+const showIdeal = params.show_ideal !== false;
+
+const counts = {};
+ROLES.forEach(r => { counts[r.key] = 0; });
+data.cards.forEach(c => {
+  const tags = roleTags[c.oracleId] || [];
+  tags.forEach(tag => { if (Object.prototype.hasOwnProperty.call(counts, tag)) counts[tag] += c.qty; });
+});
+
+const rows = ROLES.map(r => {
+  const count = counts[r.key] || 0;
+  if (count === 0 && r.ideal === 0) return '';
+  const barW = r.ideal > 0
+    ? Math.min(100, Math.round((count / (r.ideal * 1.5)) * 100))
+    : Math.min(100, count * 12);
+  const status = r.ideal > 0 ? (count >= r.ideal ? '✓' : count >= r.ideal * 0.6 ? '!' : '✗') : '';
+  const statusColor = status === '✓' ? '#86efac' : status === '!' ? '#f2ca83' : '#f87171';
+  return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+    + '<span style="font-size:9px;color:rgba(255,255,255,0.4);width:82px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + r.label + '</span>'
+    + '<div style="flex:1;height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden">'
+      + '<div style="height:100%;width:' + barW + '%;background:' + r.color + ';opacity:0.72;border-radius:2px"></div>'
+    + '</div>'
+    + '<span style="font-size:10px;font-weight:700;color:' + r.color + ';width:18px;text-align:right;flex-shrink:0">' + count + '</span>'
+    + (showIdeal && r.ideal > 0 ? '<span style="font-size:9px;color:rgba(255,255,255,0.2);width:20px;text-align:center;flex-shrink:0">/' + r.ideal + '</span>' : '<span style="width:20px;flex-shrink:0"></span>')
+    + (status ? '<span style="font-size:9px;font-weight:700;color:' + statusColor + ';flex-shrink:0;width:10px;text-align:center">' + status + '</span>' : '<span style="width:10px;flex-shrink:0"></span>')
+    + '</div>';
+}).filter(Boolean).join('');
+
+if (!rows) {
+  return '<p style="color:rgba(255,255,255,0.2);font-size:11px;text-align:center;padding:10px 0">No role data — sync cards first</p>';
+}
+return '<div style="font-family:-apple-system,sans-serif">'
+  + (showIdeal ? '<div style="font-size:9px;color:rgba(255,255,255,0.18);text-align:right;margin-bottom:5px;letter-spacing:.04em">count / ideal · ✓ ok · ! low · ✗ missing</div>' : '')
+  + rows
+  + '</div>';
+`,
+  });
+
+  // ── EDHREC Commander Recommendations ────────────────────────────────────────
+  WidgetRegistry.register({
+    id: 'edhrec-commander',
+    name: 'EDHREC Recommendations',
+    description: 'Top EDHREC-recommended cards for your commander that are not yet in the deck. Requires internet.',
+    icon: 'recommend',
+    readonly: true,
+    width: 265,
+    params: [
+      { key: 'max_recs', label: 'Max cards shown', type: 'number', default: 8, min: 3, max: 20, step: 1 },
+      { key: 'min_pct',  label: 'Min inclusion %',  type: 'number', default: 20, min: 0, max: 80, step: 5 },
+    ],
+
+    asyncWidgetData: async (data: WidgetData, params: WidgetParams) => {
+      const commander = data.cards.find(c => c.board === 'commander');
+      if (!commander) return null;
+      try {
+        const result = await window.cardsAPI.fetchEdhrecCommander({ commanderName: commander.name });
+        const deckNames = new Set(data.cards.map(c => c.name));
+        const minPct = typeof params.min_pct === 'number' ? params.min_pct : 20;
+        const maxRecs = typeof params.max_recs === 'number' ? params.max_recs : 8;
+        const recs = result.cards
+          .filter(c => !deckNames.has(c.name) && (c.pct ?? 0) >= minPct)
+          .slice(0, maxRecs);
+        return { commanderName: commander.name, numDecks: result.numDecks, recs };
+      } catch {
+        return null;
+      }
+    },
+
+    code: `
+if (!asyncData) {
+  const hasCmd = data.cards.some(c => c.board === 'commander');
+  return '<p style="color:rgba(255,255,255,0.25);font-size:11px;text-align:center;padding:12px 0">'
+    + (hasCmd ? '⏳ Loading EDHREC data…' : '⚔ No commander in deck')
+    + '</p>';
+}
+const { commanderName, numDecks, recs } = asyncData;
+if (!recs || !recs.length) {
+  return '<p style="color:rgba(255,255,255,0.22);font-size:11px;text-align:center;padding:12px 0">No recommendations found</p>';
+}
+let html = '<div style="font-family:-apple-system,sans-serif">';
+html += '<div style="font-size:9px;color:rgba(255,255,255,0.22);margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+  + commanderName + ' · ' + (numDecks > 0 ? numDecks.toLocaleString() + ' decks' : '')
+  + '</div>';
+recs.forEach(c => {
+  const pct = c.pct ?? 0;
+  const col = pct >= 50 ? '#f2ca83' : pct >= 30 ? '#86efac' : '#7eb8f7';
+  const barW = Math.round(Math.min(pct, 100));
+  const syn = c.synergy != null && c.synergy > 0
+    ? '<span style="font-size:8px;color:rgba(134,239,172,0.65);margin-left:3px">+' + c.synergy.toFixed(1) + '% syn</span>'
+    : '';
+  html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+    + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:10px;color:rgba(255,255,255,0.78);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + c.name + syn + '</div>'
+      + '<div style="height:3px;background:rgba(255,255,255,0.06);border-radius:2px;margin-top:2px;overflow:hidden">'
+        + '<div style="height:100%;width:' + barW + '%;background:' + col + ';opacity:0.65;border-radius:2px"></div>'
+      + '</div>'
+    + '</div>'
+    + '<span style="font-size:10px;font-weight:700;color:' + col + ';flex-shrink:0;width:36px;text-align:right">' + pct.toFixed(1) + '%</span>'
+    + '</div>';
+});
+html += '<div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:5px;font-size:9px;color:rgba(255,255,255,0.15)">via EDHREC · not in deck</div>';
+html += '</div>';
+return html;
+`,
   });
 }

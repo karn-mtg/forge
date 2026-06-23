@@ -4,15 +4,20 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './index.css';
 import { registerBuiltinWidgets } from './widgets/builtins';
+import { createLogger } from './utils/logger';
 
+const log = createLogger('renderer');
+
+log.info('Renderer starting');
 registerBuiltinWidgets(); // must run before first render
+log.info('Built-in widgets registered');
 
 /** Catch any unhandled React render errors and show them instead of a blank screen. */
 class RootErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null };
   static getDerivedStateFromError(error: Error) { return { error }; }
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[KarnForge] Unhandled render error:', error, info.componentStack);
+    log.error('Unhandled render error', { error: String(error), stack: info.componentStack });
   }
   render() {
     const { error } = this.state;

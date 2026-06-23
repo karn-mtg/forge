@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { CardSearchPanel } from '../components/CardSearchPanel';
+import { RecipientsModal } from '../components/RecipientsModal';
 import { useSearchStore } from '../store/useSearchStore';
 import { useConfirmStore } from '../store/useConfirmStore';
 import { useToastStore } from '../store/useToastStore';
+import { useLibraryStore } from '../store/useLibraryStore';
 import type { CollectionEntry, Card } from '../types/electron';
 import { PageHeader } from '../components/PageHeader';
 
@@ -36,6 +38,7 @@ interface EditState {
   condition: string;
   foil: boolean;
   price: string;
+  recipientId: number | null;
 }
 
 // Defined at module scope so React sees a stable component type across renders
@@ -68,6 +71,7 @@ function SortHeader({
 }
 
 export function Collection() {
+  const { recipients } = useLibraryStore();
   const [entries, setEntries] = useState<CollectionEntry[]>([]);
   const [cardNames, setCardNames] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
@@ -75,10 +79,15 @@ export function Collection() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [panelOpen, setPanelOpen] = useState(false);
+  const [recipientsOpen, setRecipientsOpen] = useState(false);
   const [addForm, setAddForm] = useState<AddFormState | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editState, setEditState] = useState<EditState | null>(null);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ added: number; skipped: string[] } | null>(null);
 
   useEffect(() => {
     setPlaceholder('Filter collection…');
@@ -170,6 +179,7 @@ export function Collection() {
       condition: entry.condition || 'NM',
       foil: !!entry.foil,
       price: entry.acquired_price != null ? String(entry.acquired_price) : '',
+      recipientId: entry.recipient_id ?? null,
     });
   };
 
@@ -180,9 +190,11 @@ export function Collection() {
     const acquiredPrice = editState.price ? parseFloat(editState.price) : null;
     await window.libraryAPI.updateCollectionEntry({
       id, quantity: editState.qty, condition: editState.condition, foil: editState.foil, acquiredPrice,
+      recipientId: editState.recipientId,
     });
     setEntries(prev => prev.map(e => e.id === id ? {
-      ...e, quantity: editState.qty, condition: editState.condition, foil: editState.foil, acquired_price: acquiredPrice,
+      ...e, quantity: editState.qty, condition: editState.condition, foil: editState.foil,
+      acquired_price: acquiredPrice, recipient_id: editState.recipientId,
     } : e));
     cancelEdit();
   };
@@ -222,6 +234,31 @@ export function Collection() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Bulk import from pasted card list (e.g. "4 Lightning Bolt\n1 Sol Ring")
+  const handleBulkImport = async () => {
+    const lines = bulkText.split('\n').map(l => l.trim()).filter(Boolean);
+    const skipped: string[] = [];
+    let added = 0;
+    setBulkImporting(true);
+    for (const line of lines) {
+      const m = line.match(/^(\d+)[x×]?\s+(.+)$/i) || line.match(/^()(.+)$/);
+      if (!m) { skipped.push(line); continue; }
+      const qty = parseInt(m[1]) || 1;
+      const name = m[2].trim();
+      try {
+        const results = await window.cardsAPI.search({ q: name, searchIn: 'name', pageSize: 1 });
+        const card = results?.cards?.[0];
+        if (!card) { skipped.push(name); continue; }
+        await window.libraryAPI.addToCollection({ oracleId: card.oracle_id, quantity: qty, condition: 'NM', foil: false, acquiredPrice: null });
+        added++;
+        setCardNames(prev => ({ ...prev, [card.oracle_id]: card.name }));
+      } catch { skipped.push(name); }
+    }
+    setBulkResult({ added, skipped });
+    setBulkImporting(false);
+    if (added > 0) await loadCollection();
   };
 
   // CSV export
@@ -266,6 +303,22 @@ export function Collection() {
                 CSV
               </button>
             )}
+            <button
+              onClick={() => setRecipientsOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-container border border-white/5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all font-bold text-label-md"
+              title="Manage physical recipients (binders, boxes…)"
+            >
+              <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: "'FILL' 1" }}>location_on</span>
+              Recipients
+            </button>
+            <button
+              onClick={() => { setBulkImportOpen(true); setBulkText(''); setBulkResult(null); }}
+              className="flex items-center gap-2 px-4 py-2 bg-surface-container border border-white/5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all font-bold text-label-md"
+              title="Bulk import cards from a list"
+            >
+              <span className="material-symbols-outlined text-[18px]">upload</span>
+              Import
+            </button>
             <button
               onClick={() => setPanelOpen(true)}
               className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-all font-bold text-label-md"
@@ -313,6 +366,7 @@ export function Collection() {
                   <SortHeader col="quantity" label="Qty" sortKey={sortKey} sortDir={sortDir} setSortKey={setSortKey} setSortDir={setSortDir} />
                   <SortHeader col="foil" label="Foil" sortKey={sortKey} sortDir={sortDir} setSortKey={setSortKey} setSortDir={setSortDir} />
                   <SortHeader col="price" label="Price" sortKey={sortKey} sortDir={sortDir} setSortKey={setSortKey} setSortDir={setSortDir} />
+                  <th className="px-5 py-3.5 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/50 hidden lg:table-cell">Location</th>
                   <th className="px-5 py-3.5 text-[10px] uppercase tracking-widest font-bold text-on-surface-variant/50" />
                 </tr>
               </thead>
@@ -348,6 +402,18 @@ export function Collection() {
                             className="w-20 bg-surface-container/50 border border-white/10 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:border-primary/50 tabular-nums" />
                         </td>
                         <td className="px-5 py-3">
+                          <select
+                            value={editState.recipientId ?? ''}
+                            onChange={e => setEditState(s => s && { ...s, recipientId: e.target.value ? Number(e.target.value) : null })}
+                            className="bg-surface-container/50 border border-white/10 rounded-md px-2 py-1 text-[11px] focus:outline-none focus:border-primary/50 max-w-[110px]"
+                          >
+                            <option value="" className="bg-surface-container">No recipient</option>
+                            {recipients.map(r => (
+                              <option key={r.id} value={r.id} className="bg-surface-container">{r.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-5 py-3">
                           <div className="flex items-center gap-1">
                             <button onClick={() => saveEdit(entry.id)} className="w-7 h-7 rounded-md flex items-center justify-center text-green-400 hover:bg-green-500/10 transition-all" title="Save">
                               <span className="material-symbols-outlined text-[16px]">check</span>
@@ -366,7 +432,9 @@ export function Collection() {
 
                   return (
                     <tr key={entry.id} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
-                      <td className="px-5 py-3.5 text-body-md text-on-surface font-medium">{name}</td>
+                      <td className="px-5 py-3.5 text-body-md text-on-surface font-medium">
+                        <span data-oracle-id={entry.oracle_id} data-card-name={name} className="cursor-default">{name}</span>
+                      </td>
                       <td className="px-5 py-3.5">
                         <span className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${condCls}`}>{entry.condition || '—'}</span>
                       </td>
@@ -375,6 +443,14 @@ export function Collection() {
                         {entry.foil && <span className="px-1.5 py-0.5 rounded-md bg-primary/10 text-primary border border-primary/20 text-[10px] font-bold">FOIL</span>}
                       </td>
                       <td className="px-5 py-3.5 text-body-md text-on-surface-variant tabular-nums">{price}</td>
+                      <td className="px-5 py-3.5 hidden lg:table-cell">
+                        {entry.recipient_id ? (
+                          <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[11px]" style={{ fontVariationSettings: "'FILL' 1" }}>location_on</span>
+                            {recipients.find(r => r.id === entry.recipient_id)?.name ?? '—'}
+                          </span>
+                        ) : <span className="text-[10px] text-on-surface-variant/20">—</span>}
+                      </td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
                           <button onClick={() => startEdit(entry)} className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:text-primary hover:bg-primary/10 transition-all" title="Edit">
@@ -411,6 +487,56 @@ export function Collection() {
       </main>
 
       <CardSearchPanel isOpen={panelOpen} onClose={() => setPanelOpen(false)} title="Add to Collection" onSelectCard={handleSelectCard} />
+      <RecipientsModal isOpen={recipientsOpen} onClose={() => setRecipientsOpen(false)} />
+
+      {/* Bulk import modal */}
+      {bulkImportOpen && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }} onClick={e => { if (e.target === e.currentTarget) setBulkImportOpen(false); }}>
+          <div className="w-[520px] rounded-2xl flex flex-col gap-4 p-6" style={{ background: 'rgba(20,22,27,0.99)', border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 24px 80px rgba(0,0,0,0.7)' }}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-[15px] font-bold text-on-surface">Bulk Import Cards</h3>
+              <button onClick={() => setBulkImportOpen(false)} className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant hover:bg-white/10 transition-all">
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-on-surface-variant/50 -mt-2">
+              Paste a card list. Each line: <code className="text-primary/60">4 Lightning Bolt</code> or just a name.
+            </p>
+            <textarea
+              className="w-full h-48 bg-surface-container/60 border border-white/8 rounded-xl p-3 text-[12px] text-on-surface font-mono focus:outline-none focus:border-primary/50 resize-none placeholder:text-on-surface-variant/25"
+              placeholder={"4 Sol Ring\n1 Command Tower\nArcane Signet\n..."}
+              value={bulkText}
+              onChange={e => setBulkText(e.target.value)}
+            />
+            {bulkResult && (
+              <div className="rounded-xl p-3 text-[11px]" style={{ background: bulkResult.skipped.length > 0 ? 'rgba(251,191,36,0.08)' : 'rgba(74,222,128,0.08)', border: `1px solid ${bulkResult.skipped.length > 0 ? 'rgba(251,191,36,0.2)' : 'rgba(74,222,128,0.2)'}` }}>
+                <p className="font-bold" style={{ color: bulkResult.skipped.length > 0 ? '#fbbf24' : '#4ade80' }}>
+                  {bulkResult.added} card{bulkResult.added !== 1 ? 's' : ''} imported
+                  {bulkResult.skipped.length > 0 ? ` · ${bulkResult.skipped.length} not found` : ''}
+                </p>
+                {bulkResult.skipped.length > 0 && (
+                  <p className="text-on-surface-variant/45 mt-1">Not found: {bulkResult.skipped.slice(0, 5).join(', ')}{bulkResult.skipped.length > 5 ? `… +${bulkResult.skipped.length - 5} more` : ''}</p>
+                )}
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setBulkImportOpen(false)} className="px-4 py-2 rounded-lg text-[12px] font-bold text-on-surface-variant hover:bg-white/5 transition-all">Cancel</button>
+              <button
+                onClick={handleBulkImport}
+                disabled={bulkImporting || !bulkText.trim()}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-[12px] font-bold transition-all disabled:opacity-40"
+                style={{ background: 'rgba(242,202,131,0.12)', border: '1px solid rgba(242,202,131,0.25)', color: '#f2ca83' }}
+              >
+                {bulkImporting ? (
+                  <><span className="material-symbols-outlined text-[14px] animate-spin">sync</span>Importing…</>
+                ) : (
+                  <><span className="material-symbols-outlined text-[14px]">upload</span>Import</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add form panel */}
       {addForm && (

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('libraryAPI', {
   createFolder:         (args) => ipcRenderer.invoke('lib:createFolder', args),
   renameFolder:         (args) => ipcRenderer.invoke('lib:renameFolder', args),
   deleteFolder:         (args) => ipcRenderer.invoke('lib:deleteFolder', args),
+  moveFolder:           (args) => ipcRenderer.invoke('lib:moveFolder', args),
   getDecks:             (args) => ipcRenderer.invoke('lib:getDecks', args),
   createDeck:           (args) => ipcRenderer.invoke('lib:createDeck', args),
   getDeck:              (args) => ipcRenderer.invoke('lib:getDeck', args),
@@ -22,10 +23,18 @@ contextBridge.exposeInMainWorld('libraryAPI', {
   removeCardFromDeck:   (args) => ipcRenderer.invoke('lib:removeCardFromDeck', args),
   updateCardBoard:      (args) => ipcRenderer.invoke('lib:updateCardBoard', args),
   updateCardQuantity:   (args) => ipcRenderer.invoke('lib:updateCardQuantity', args),
+  getRecipients:        (args) => ipcRenderer.invoke('lib:getRecipients', args),
+  createRecipient:      (args) => ipcRenderer.invoke('lib:createRecipient', args),
+  updateRecipient:      (args) => ipcRenderer.invoke('lib:updateRecipient', args),
+  deleteRecipient:      (args) => ipcRenderer.invoke('lib:deleteRecipient', args),
+  mountDeck:            (args) => ipcRenderer.invoke('lib:mountDeck', args),
+  unmountDeck:          (args) => ipcRenderer.invoke('lib:unmountDeck', args),
   getCollection:        (args) => ipcRenderer.invoke('lib:getCollection', args),
   addToCollection:      (args) => ipcRenderer.invoke('lib:addToCollection', args),
   removeFromCollection: (args) => ipcRenderer.invoke('lib:removeFromCollection', args),
   updateCollectionEntry: (args) => ipcRenderer.invoke('lib:updateCollectionEntry', args),
+  getDeckCardStatuses:  (args) => ipcRenderer.invoke('lib:getDeckCardStatuses', args),
+  updateCardProxy:      (args) => ipcRenderer.invoke('lib:updateCardProxy', args),
   getWishlist:          (args) => ipcRenderer.invoke('lib:getWishlist', args),
   addToWishlist:        (args) => ipcRenderer.invoke('lib:addToWishlist', args),
   removeFromWishlist:   (args) => ipcRenderer.invoke('lib:removeFromWishlist', args),
@@ -40,24 +49,62 @@ contextBridge.exposeInMainWorld('libraryAPI', {
   deleteArrangement:        (args) => ipcRenderer.invoke('lib:deleteArrangement', args),
   saveArrangementCanvas:    (args) => ipcRenderer.invoke('lib:saveArrangementCanvas', args),
   loadArrangementCanvas:    (args) => ipcRenderer.invoke('lib:loadArrangementCanvas', args),
+  getDecksWithCard:         (args) => ipcRenderer.invoke('lib:getDecksWithCard', args),
+  getMostUsedCards:         (args) => ipcRenderer.invoke('lib:getMostUsedCards', args),
 });
 
 contextBridge.exposeInMainWorld('settingsAPI', {
   get:          ()     => ipcRenderer.invoke('settings:get'),
   set:          (args) => ipcRenderer.invoke('settings:set', args),
   openUserData: ()     => ipcRenderer.invoke('shell:openUserData'),
+  openLogs:     ()     => ipcRenderer.invoke('shell:openLogs'),
+});
+
+contextBridge.exposeInMainWorld('aiAPI', {
+  checkClaude:     ()      => ipcRenderer.invoke('ai:checkClaude'),
+  chat:            (text)  => ipcRenderer.invoke('ai:chat', { text }),
+  abort:           ()      => ipcRenderer.invoke('ai:abort'),
+  clearSession:    ()      => ipcRenderer.invoke('ai:clearSession'),
+  getMemory:       ()      => ipcRenderer.invoke('ai:getMemory'),
+  upsertMemory:    (args)  => ipcRenderer.invoke('ai:upsertMemory', args),
+  deleteMemory:    (args)  => ipcRenderer.invoke('ai:deleteMemory', args),
+  onToken:         (cb)    => ipcRenderer.on('ai:token', (_e, t) => cb(t)),
+  onDone:          (cb)    => ipcRenderer.on('ai:done', (_e, d) => cb(d)),
+  onError:         (cb)    => ipcRenderer.on('ai:error', (_e, e) => cb(e)),
+  removeListeners: ()      => ['ai:token', 'ai:done', 'ai:error'].forEach(c => ipcRenderer.removeAllListeners(c)),
+  // Card query — isolated session, no --resume, returns oracle_ids
+  cardQuery:               (prompt) => ipcRenderer.invoke('ai:cardQuery', { prompt }),
+  cardQueryAbort:          ()       => ipcRenderer.invoke('ai:cardQueryAbort'),
+  onCardQueryToken:        (cb)     => ipcRenderer.on('ai:cardQueryToken',  (_e, t) => cb(t)),
+  onCardQueryResult:       (cb)     => ipcRenderer.on('ai:cardQueryResult', (_e, d) => cb(d)),
+  onCardQueryDone:         (cb)     => ipcRenderer.on('ai:cardQueryDone',   ()      => cb()),
+  onCardQueryError:        (cb)     => ipcRenderer.on('ai:cardQueryError',  (_e, e) => cb(e)),
+  removeCardQueryListeners: ()      => ['ai:cardQueryToken', 'ai:cardQueryResult', 'ai:cardQueryDone', 'ai:cardQueryError'].forEach(c => ipcRenderer.removeAllListeners(c)),
+});
+
+contextBridge.exposeInMainWorld('arsenalAPI', {
+  getStatus:           ()                    => ipcRenderer.invoke('arsenal:getStatus'),
+  checkForUpdates:     ()                    => ipcRenderer.invoke('arsenal:checkForUpdates'),
+  checkForDbUpdates:   (component)           => ipcRenderer.invoke('arsenal:checkForDbUpdates', component),
+  checkAllForUpdates:  ()                    => ipcRenderer.invoke('arsenal:checkAllForUpdates'),
+  downloadUpdate:      (version)             => ipcRenderer.invoke('arsenal:downloadUpdate', version),
+  downloadDbUpdate:    (component, version)  => ipcRenderer.invoke('arsenal:downloadDbUpdate', component, version),
+  restart:             ()                    => ipcRenderer.invoke('arsenal:restart'),
+  onProgress:          (cb)                  => ipcRenderer.on('arsenal:progress', (_e, data) => cb(data)),
+  removeListeners:     ()                    => ipcRenderer.removeAllListeners('arsenal:progress'),
 });
 
 contextBridge.exposeInMainWorld('cardsAPI', {
-  getStatus:        ()     => ipcRenderer.invoke('cards:status'),
-  startSync:        (args) => ipcRenderer.send('cards:startSync', args),
-  search:           (args) => ipcRenderer.invoke('cards:search', args),
-  getCard:          (args) => ipcRenderer.invoke('cards:getCard', args),
-  getCardImages:    (args) => ipcRenderer.invoke('cards:getCardImages', args),
-  getCardsBatch:    (args) => ipcRenderer.invoke('cards:getCardsBatch', args),
-  fetchEdhrecData:  (args) => ipcRenderer.invoke('cards:fetchEdhrecData', args),
-  onProgress:       (cb)   => {
-    ipcRenderer.on('cards:progress', (_e, data) => cb(data));
-    return () => ipcRenderer.removeAllListeners('cards:progress');
-  },
+  getStatus:              ()     => ipcRenderer.invoke('cards:status'),
+  search:                 (args) => ipcRenderer.invoke('cards:search', args),
+  getCard:                (args) => ipcRenderer.invoke('cards:getCard', args),
+  getCardImages:          (args) => ipcRenderer.invoke('cards:getCardImages', args),
+  getCardsBatch:          (args) => ipcRenderer.invoke('cards:getCardsBatch', args),
+  getCardsByNames:        (args) => ipcRenderer.invoke('cards:getCardsByNames', args),
+  getRoleTags:            (args) => ipcRenderer.invoke('cards:getRoleTags', args),
+  searchByRole:           (args) => ipcRenderer.invoke('cards:searchByRole', args),
+  fetchEdhrecData:        (args) => ipcRenderer.invoke('cards:fetchEdhrecData', args),
+  fetchEdhrecCommander:   (args) => ipcRenderer.invoke('cards:fetchEdhrecCommander', args),
+  fetchEdhrecTheme:       (args) => ipcRenderer.invoke('cards:fetchEdhrecTheme', args),
+  fetchSpellbookCombos:   (args) => ipcRenderer.invoke('cards:fetchSpellbookCombos', args),
 });

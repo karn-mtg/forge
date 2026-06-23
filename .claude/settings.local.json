@@ -49,7 +49,15 @@
       "Bash(powershell *)",
       "Bash(node -e \"const { marked, Marked } = require\\('marked'\\); console.log\\(typeof marked.parse, typeof Marked\\); const m = new Marked\\({ breaks: true, gfm: true }\\); const r = m.parse\\('# Hello'\\); console.log\\(typeof r, r\\);\")",
       "Bash(node -e \"const { marked } = require\\('marked'\\); const r = marked.parse\\('# Hello', { breaks: true, gfm: true }\\); console.log\\(typeof r, JSON.stringify\\(r\\)\\);\")",
-      "Bash(node -e \"const { marked } = require\\('marked'\\); console.log\\(marked.parse\\('# Hello\\\\n**bold** and _italic_\\\\n- item 1\\\\n- item 2', { breaks: true, gfm: true }\\)\\);\")"
+      "Bash(node -e \"const { marked } = require\\('marked'\\); console.log\\(marked.parse\\('# Hello\\\\n**bold** and _italic_\\\\n- item 1\\\\n- item 2', { breaks: true, gfm: true }\\)\\);\")",
+      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\(p.get\\('main','?'\\)\\); print\\(list\\(p.get\\('scripts',{}\\).keys\\(\\)\\)\\)\")",
+      "Bash(node *)",
+      "Bash(findstr /i \"main\\\\|electron\\\\|start\\\\|dev\")",
+      "Bash(Get-Content *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(\\(Get-Content \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\draft.md\" -Raw\\).Length; \\(Get-Content \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\\\\draft.md\"\\).Count)",
+      "Bash(curl *)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\GuiDi\\\\workspace\\\\karnforge\" -Recurse -File | Where-Object { $_.FullName -notmatch 'node_modules|dist|\\\\.git' } | Select-Object FullName | Sort-Object FullName)"
     ]
   }
 }

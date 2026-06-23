@@ -80,6 +80,31 @@ details[open] > summary .disclosure-arrow { transform: rotate(90deg); }
 .card-stack:hover .card-layer-1 { transform: translate(4px, -4px); }
 .card-stack:hover .card-layer-2 { transform: translate(8px, -8px); }
 
+/* Box-shadow lift applied during drag — replaces expensive filter:drop-shadow */
+.card-stack.card-lifting {
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.85), 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* Suppress card-layer hover transitions while any drag is in progress */
+.dragging-active .card-stack .card-layer {
+  transition: none !important;
+}
+
+/* Karn AI chat — markdown prose styles */
+.prose-karn p        { margin: 0 0 0.5em; }
+.prose-karn p:last-child { margin-bottom: 0; }
+.prose-karn ul, .prose-karn ol { margin: 0.25em 0 0.5em 1.25em; }
+.prose-karn li       { margin-bottom: 0.2em; }
+.prose-karn h1, .prose-karn h2, .prose-karn h3 { font-weight: 700; margin: 0.75em 0 0.25em; color: #f2ca83; }
+.prose-karn h1       { font-size: 1.1em; }
+.prose-karn h2       { font-size: 1em; }
+.prose-karn h3       { font-size: 0.9em; }
+.prose-karn code     { background: rgba(255,255,255,0.08); border-radius: 3px; padding: 0.1em 0.35em; font-size: 0.85em; }
+.prose-karn pre      { background: rgba(255,255,255,0.05); border-radius: 6px; padding: 0.75em 1em; overflow-x: auto; }
+.prose-karn pre code { background: none; padding: 0; }
+.prose-karn strong   { color: #f2ca83; font-weight: 600; }
+.prose-karn hr       { border-color: rgba(255,255,255,0.1); margin: 0.75em 0; }
+
 /* Mana pip */
 .mana-pip {
   width: 10px; height: 10px;
@@ -206,9 +231,7 @@ details[open] > summary .disclosure-arrow { transform: rotate(90deg); }
 
 /* ── Canvas widgets ──────────────────────────────────────────────────────── */
 .canvas-widget {
-  background: rgba(16, 18, 24, 0.93);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  background: rgba(16, 18, 24, 0.97);
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 0.75rem;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
@@ -349,9 +372,7 @@ details[open] > summary .disclosure-arrow { transform: rotate(90deg); }
   position: absolute;
   min-width: 180px;
   max-width: 600px;
-  background: rgba(26, 29, 34, 0.92);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: rgba(26, 29, 34, 0.97);
   border: 1px solid rgba(242, 202, 131, 0.25);
   border-radius: 0.5rem;
   padding: 0.625rem 0.75rem;

@@ -12,6 +12,10 @@ import type { Deck } from '../types/electron';
 
 const VALID_COLORS = new Set(['W', 'U', 'B', 'R', 'G', 'C']);
 
+const RECIPIENT_ICONS: Record<string, string> = {
+  binder: 'menu_book', box: 'inventory_2', deck_box: 'deployed_code', other: 'location_on',
+};
+
 const FORMAT_LABELS: Record<string, string> = {
   commander: 'Commander', modern: 'Modern', standard: 'Standard',
   pioneer: 'Pioneer', legacy: 'Legacy', vintage: 'Vintage', pauper: 'Pauper',
@@ -165,6 +169,17 @@ export function DeckCard({ deck }: DeckCardProps) {
             <span className="text-[11px]">{cardCount} Cards</span>
             <span className="text-[10px]">{timeAgo(deck.updated_at)}</span>
           </div>
+          {deck.recipient_id ? (
+            <div className="flex items-center gap-1 mt-1.5">
+              <span
+                className="material-symbols-outlined text-[11px] text-emerald-400"
+                style={{ fontVariationSettings: "'FILL' 1" }}
+              >
+                {RECIPIENT_ICONS[deck.recipient_type ?? 'other'] ?? 'location_on'}
+              </span>
+              <span className="text-[10px] text-emerald-400 truncate">{deck.recipient_name}</span>
+            </div>
+          ) : null}
         </div>
       </a>
 

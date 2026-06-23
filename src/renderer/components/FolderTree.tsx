@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, createContext, useContext } from 'react';
+import { useState, useEffect, useRef, useMemo, createContext, useContext, useCallback } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useConfirmStore } from '../store/useConfirmStore';
@@ -8,6 +8,10 @@ import type { MenuItem } from './ContextMenu';
 import type { FolderNode, Deck } from '../types/electron';
 
 interface CtxMenuState { x: number; y: number; items: MenuItem[] }
+
+type DragItem = { type: 'folder' | 'deck'; id: number } | null;
+/** null = no active target; 'root' = My Decks root; number = a folder id */
+type DropTargetId = number | 'root' | null;
 
 // ─── Inline Rename ────────────────────────────────────────────────────────────
 
@@ -44,11 +48,28 @@ function InlineRename({ initialValue, onConfirm, onCancel }: {
   );
 }
 
-// ─── Shared tree state via context ────────────────────────────────────────────
+// ─── Tree helpers ─────────────────────────────────────────────────────────────
+
+/** True if `node` contains a folder with `targetId` anywhere in its subtree. */
+function folderContains(node: FolderNode, targetId: number): boolean {
+  if (node.id === targetId) return true;
+  return node.children.some(c => folderContains(c, targetId));
+}
+
+function findFolderNode(folders: FolderNode[], id: number): FolderNode | null {
+  for (const f of folders) {
+    if (f.id === id) return f;
+    const found = findFolderNode(f.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+// ─── Context ──────────────────────────────────────────────────────────────────
 
 type RenameTarget =
   | { type: 'folder'; id: number; name: string }
-  | { type: 'deck'; id: number; name: string };
+  | { type: 'deck';   id: number; name: string };
 
 interface TreeCtx {
   decksByFolder: Map<number | '__root__', Deck[]>;
@@ -65,6 +86,15 @@ interface TreeCtx {
   onNewDeck: (folderId: number | null) => void;
   onMoveDeck: (id: number, name: string) => void;
   onDuplicateDeck: (id: number) => void;
+  // Drag & drop
+  dragItem: DragItem;
+  dropTargetId: DropTargetId;
+  allFolders: FolderNode[];
+  onDragStart: (type: 'folder' | 'deck', id: number, e: React.DragEvent) => void;
+  onDragEnd: () => void;
+  onDragOverTarget: (targetId: number | 'root', e: React.DragEvent) => void;
+  onDropOnTarget: (targetId: number | 'root') => void;
+  clearDropTarget: () => void;
 }
 
 const TreeContext = createContext<TreeCtx>({} as TreeCtx);
@@ -75,18 +105,25 @@ function DeckItem({ deck }: { deck: Deck }) {
   const ctx = useContext(TreeContext);
   const navigate = useNavigate();
   const isRenaming = ctx.renaming?.type === 'deck' && ctx.renaming.id === deck.id;
+  const isDragging = ctx.dragItem?.type === 'deck' && ctx.dragItem.id === deck.id;
 
   const menuItems: MenuItem[] = [
-    { label: 'Open', icon: 'open_in_new', onClick: () => navigate(`/deck/${deck.id}`) },
-    { label: 'Rename', icon: 'drive_file_rename_outline', onClick: () => ctx.startRenameDeck(deck.id, deck.name) },
-    { label: 'Duplicate', icon: 'content_copy', onClick: () => ctx.onDuplicateDeck(deck.id) },
-    { label: 'Move to Folder…', icon: 'drive_file_move', onClick: () => ctx.onMoveDeck(deck.id, deck.name) },
+    { label: 'Open',            icon: 'open_in_new',              onClick: () => navigate(`/deck/${deck.id}`) },
+    { label: 'Rename',          icon: 'drive_file_rename_outline', onClick: () => ctx.startRenameDeck(deck.id, deck.name) },
+    { label: 'Duplicate',       icon: 'content_copy',             onClick: () => ctx.onDuplicateDeck(deck.id) },
+    { label: 'Move to Folder…', icon: 'drive_file_move',          onClick: () => ctx.onMoveDeck(deck.id, deck.name) },
     { divider: true },
     { label: 'Delete', icon: 'delete_outline', danger: true, onClick: () => ctx.deleteDeck(deck.id, deck.name) },
   ];
 
   return (
-    <div onContextMenu={e => ctx.openCtx(e, menuItems)}>
+    <div
+      draggable={!isRenaming}
+      onDragStart={e => ctx.onDragStart('deck', deck.id, e)}
+      onDragEnd={ctx.onDragEnd}
+      onContextMenu={e => ctx.openCtx(e, menuItems)}
+      style={{ opacity: isDragging ? 0.4 : undefined }}
+    >
       {isRenaming ? (
         <div className="flex items-center px-3 py-1.5">
           <span className="material-symbols-outlined mr-2 flex-shrink-0 text-primary/50" style={{ fontSize: 15 }}>style</span>
@@ -107,7 +144,11 @@ function DeckItem({ deck }: { deck: Deck }) {
         >
           <span
             className="material-symbols-outlined mr-2 flex-shrink-0"
-            style={{ fontSize: 15, fontVariationSettings: deck.is_favorite ? "'FILL' 1" : "'FILL' 0", color: deck.is_favorite ? 'var(--color-primary, #a78bfa)' : undefined }}
+            style={{
+              fontSize: 15,
+              fontVariationSettings: deck.is_favorite ? "'FILL' 1" : "'FILL' 0",
+              color: deck.is_favorite ? 'var(--color-primary, #a78bfa)' : undefined,
+            }}
           >
             {deck.is_favorite ? 'star' : 'style'}
           </span>
@@ -118,41 +159,100 @@ function DeckItem({ deck }: { deck: Deck }) {
   );
 }
 
-// ─── FolderItem ───────────────────────────────────────────────────────────────
+// ─── FolderRow ─ the draggable/droppable header row for a folder ──────────────
 
 function FolderItem({ folder }: { folder: FolderNode }) {
   const ctx = useContext(TreeContext);
-  const isRenaming = ctx.renaming?.type === 'folder' && ctx.renaming.id === folder.id;
-  const folderDecks = ctx.decksByFolder.get(folder.id) || [];
-  const hasChildren = folder.children.length > 0 || folderDecks.length > 0;
+  const [isOpen, setIsOpen] = useState(true);
+
+  const isRenaming   = ctx.renaming?.type === 'folder' && ctx.renaming.id === folder.id;
+  const folderDecks  = ctx.decksByFolder.get(folder.id) || [];
+  const hasChildren  = folder.children.length > 0 || folderDecks.length > 0;
+  const isDragging   = ctx.dragItem?.type === 'folder' && ctx.dragItem.id === folder.id;
+  const isDropTarget = ctx.dropTargetId === folder.id;
+
+  /**
+   * A drop is legal if:
+   * - Something is being dragged
+   * - We are not dropping a folder onto itself
+   * - We are not dropping a folder onto one of its own descendants (would create a cycle)
+   */
+  const canAcceptDrop = useMemo(() => {
+    if (!ctx.dragItem) return false;
+    if (ctx.dragItem.type === 'folder') {
+      if (ctx.dragItem.id === folder.id) return false;
+      const dragged = findFolderNode(ctx.allFolders, ctx.dragItem.id);
+      if (dragged && folderContains(dragged, folder.id)) return false;
+    }
+    return true;
+  }, [ctx.dragItem, ctx.allFolders, folder.id]);
 
   const menuItems: MenuItem[] = [
-    { label: 'New Subfolder', icon: 'create_new_folder', onClick: () => ctx.onNewFolder(folder.id) },
-    { label: 'New Deck Here', icon: 'add_circle', onClick: () => ctx.onNewDeck(folder.id) },
+    { label: 'New Subfolder', icon: 'create_new_folder',          onClick: () => ctx.onNewFolder(folder.id) },
+    { label: 'New Deck Here', icon: 'add_circle',                  onClick: () => ctx.onNewDeck(folder.id) },
     { divider: true },
-    { label: 'Rename', icon: 'drive_file_rename_outline', onClick: () => ctx.startRenameFolder(folder.id, folder.name) },
+    { label: 'Rename',        icon: 'drive_file_rename_outline',   onClick: () => ctx.startRenameFolder(folder.id, folder.name) },
     { label: 'Delete Folder', icon: 'delete_outline', danger: true, onClick: () => ctx.deleteFolder(folder.id) },
   ];
 
+  // ── DnD on the row div (both drag source and drop target) ──────────────────
+  const handleDragStart = (e: React.DragEvent) => {
+    e.stopPropagation(); // don't bubble to a parent folder's drag handler
+    ctx.onDragStart('folder', folder.id, e);
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    e.stopPropagation();
+    ctx.onDragEnd();
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.stopPropagation(); // prevent parent folder from lighting up simultaneously
+    if (canAcceptDrop) {
+      ctx.onDragOverTarget(folder.id, e); // calls e.preventDefault() inside
+    } else {
+      // Hovering over an invalid target — clear any stale highlight
+      e.preventDefault(); // still need to allow dragover to prevent "forbidden" cursor
+      ctx.clearDropTarget();
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (canAcceptDrop) ctx.onDropOnTarget(folder.id);
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <details open>
-      <summary
-        className="flex items-center px-3 py-1.5 hover:bg-white/5 rounded-md cursor-pointer select-none transition-colors list-none"
+    <div style={{ opacity: isDragging ? 0.4 : undefined }}>
+
+      {/* ── Header row ── */}
+      <div
+        draggable={!isRenaming}
+        className={[
+          'flex items-center px-3 py-1.5 rounded-md select-none transition-all',
+          isDropTarget ? 'ring-2 ring-primary/50 bg-primary/10' : 'hover:bg-white/5 cursor-pointer',
+        ].join(' ')}
+        onClick={() => { if (!isRenaming) setIsOpen(o => !o); }}
         onContextMenu={e => ctx.openCtx(e, menuItems)}
-        onClick={e => { if (isRenaming) e.preventDefault(); }}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
       >
+        {/* Disclosure chevron — rotates 90° when open */}
         <span
-          className="material-symbols-outlined mr-1 flex-shrink-0 disclosure-arrow text-on-surface-variant/30"
-          style={{ fontSize: 15 }}
+          className="material-symbols-outlined mr-1 flex-shrink-0 text-on-surface-variant/30 transition-transform duration-150"
+          style={{ fontSize: 15, transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
         >
           chevron_right
         </span>
-        <span
-          className="material-symbols-outlined mr-2 flex-shrink-0 text-on-surface-variant/50"
-          style={{ fontSize: 15 }}
-        >
+
+        <span className="material-symbols-outlined mr-2 flex-shrink-0 text-on-surface-variant/50" style={{ fontSize: 15 }}>
           folder
         </span>
+
         {isRenaming ? (
           <InlineRename
             initialValue={ctx.renaming!.name}
@@ -164,15 +264,22 @@ function FolderItem({ folder }: { folder: FolderNode }) {
             {folder.name}
           </span>
         )}
-      </summary>
 
-      {hasChildren && (
+        {isDropTarget && (
+          <span className="material-symbols-outlined ml-auto flex-shrink-0 text-primary/60" style={{ fontSize: 13 }}>
+            move_to_inbox
+          </span>
+        )}
+      </div>
+
+      {/* ── Children ── */}
+      {isOpen && hasChildren && (
         <div className="ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5">
           {folder.children.map(child => <FolderItem key={child.id} folder={child} />)}
           {folderDecks.map(deck => <DeckItem key={deck.id} deck={deck} />)}
         </div>
       )}
-    </details>
+    </div>
   );
 }
 
@@ -184,14 +291,22 @@ interface FolderTreeProps {
 }
 
 export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
-  const { folders, decks, renameFolder, deleteFolder, updateDeck, deleteDeck, duplicateDeck, reloadLibrary } = useLibraryStore();
-  const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
-  const [renaming, setRenaming] = useState<RenameTarget | null>(null);
-  const [moveModal, setMoveModal] = useState<{ deckId: number; deckName: string } | null>(null);
+  const {
+    folders, decks,
+    renameFolder, deleteFolder, updateDeck, deleteDeck, duplicateDeck,
+    reloadLibrary, moveFolder,
+  } = useLibraryStore();
+
+  const [ctxMenu,      setCtxMenu]      = useState<CtxMenuState | null>(null);
+  const [renaming,     setRenaming]     = useState<RenameTarget | null>(null);
+  const [moveModal,    setMoveModal]    = useState<{ deckId: number; deckName: string } | null>(null);
+  const [dragItem,     setDragItem]     = useState<DragItem>(null);
+  const [dropTargetId, setDropTargetId] = useState<DropTargetId>(null);
+
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Group decks by folder_id — memoized so the Map is only rebuilt when decks change
+  // Group decks by folder_id — rebuilt only when decks change
   const decksByFolder = useMemo(() => {
     const map = new Map<number | '__root__', Deck[]>();
     for (const d of decks) {
@@ -203,25 +318,67 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
   }, [decks]);
   const rootDecks = decksByFolder.get('__root__') || [];
 
-  const openCtx = (e: React.MouseEvent, items: MenuItem[]) => {
+  const openCtx = useCallback((e: React.MouseEvent, items: MenuItem[]) => {
     e.preventDefault();
     e.stopPropagation();
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
-  };
+  }, []);
 
   const rootMenuItems: MenuItem[] = [
     { label: 'New Folder', icon: 'create_new_folder', onClick: () => onNewFolder(null) },
-    { label: 'New Deck', icon: 'add_circle', onClick: () => onNewDeck(null) },
+    { label: 'New Deck',   icon: 'add_circle',         onClick: () => onNewDeck(null) },
   ];
 
-  // Memoize the context value so child tree nodes only re-render when their
-  // relevant slice of state changes, not on every Sidebar render.
+  // ─── DnD handlers ───────────────────────────────────────────────────────────
+
+  const handleDragStart = useCallback((type: 'folder' | 'deck', id: number, e: React.DragEvent) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify({ type, id }));
+    setDragItem({ type, id });
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDragItem(null);
+    setDropTargetId(null);
+  }, []);
+
+  const handleDragOverTarget = useCallback((targetId: number | 'root', e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropTargetId(prev => prev === targetId ? prev : targetId);
+  }, []);
+
+  const clearDropTarget = useCallback(() => {
+    setDropTargetId(null);
+  }, []);
+
+  const handleDropOnTarget = useCallback(async (targetId: number | 'root') => {
+    if (!dragItem) return;
+    // Capture and clear state BEFORE async op — don't rely on dragend
+    // because React may unmount the drag source node during the tree reload.
+    const item = dragItem;
+    setDragItem(null);
+    setDropTargetId(null);
+
+    const folderId = targetId === 'root' ? null : (targetId as number);
+    if (item.type === 'deck') {
+      await updateDeck({ id: item.id, folder_id: folderId });
+    } else {
+      await moveFolder({ id: item.id, parent_id: folderId });
+    }
+  }, [dragItem, updateDeck, moveFolder]);
+
+  const isRootDropTarget = dropTargetId === 'root';
+  const isDecksActive    = location.pathname === '/decks';
+
+  // ─── Build context object ────────────────────────────────────────────────────
+
   const ctx = useMemo<TreeCtx>(() => ({
     decksByFolder,
     renaming,
     openCtx,
     startRenameFolder: (id, name) => setRenaming({ type: 'folder', id, name }),
-    startRenameDeck: (id, name) => setRenaming({ type: 'deck', id, name }),
+    startRenameDeck:   (id, name) => setRenaming({ type: 'deck',   id, name }),
     cancelRename: () => setRenaming(null),
     confirmRenameFolder: async (id, name) => {
       setRenaming(null);
@@ -251,45 +408,89 @@ export function FolderTree({ onNewFolder, onNewDeck }: FolderTreeProps) {
     },
     onNewFolder,
     onNewDeck,
-    onMoveDeck: (id, name) => setMoveModal({ deckId: id, deckName: name }),
-    onDuplicateDeck: async (id) => {
-      await duplicateDeck({ id });
-    },
+    onMoveDeck:      (id, name) => setMoveModal({ deckId: id, deckName: name }),
+    onDuplicateDeck: async (id) => { await duplicateDeck({ id }); },
+    // DnD
+    dragItem,
+    dropTargetId,
+    allFolders: folders,
+    onDragStart:     handleDragStart,
+    onDragEnd:       handleDragEnd,
+    onDragOverTarget: handleDragOverTarget,
+    onDropOnTarget:  handleDropOnTarget,
+    clearDropTarget,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [decksByFolder, renaming, openCtx, renameFolder, updateDeck, deleteFolder, deleteDeck, onNewFolder, onNewDeck, duplicateDeck]);
+  }), [
+    decksByFolder, renaming, openCtx,
+    renameFolder, updateDeck, deleteFolder, deleteDeck, duplicateDeck,
+    onNewFolder, onNewDeck,
+    dragItem, dropTargetId, folders,
+    handleDragStart, handleDragEnd, handleDragOverTarget, handleDropOnTarget, clearDropTarget,
+  ]);
 
-  const isDecksActive = location.pathname === '/decks';
+  // ─── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <TreeContext.Provider value={ctx}>
-      <details open>
-        <summary
-          className={`flex items-center px-3 py-1.5 rounded-md cursor-pointer select-none transition-colors list-none ${isDecksActive ? 'tree-item-active' : 'hover:bg-white/5'}`}
-          onContextMenu={e => openCtx(e, rootMenuItems)}
-          onClick={e => { e.preventDefault(); navigate('/decks'); }}
+
+      {/* ── "My Decks" root row ── */}
+      <div
+        className={[
+          'flex items-center px-3 py-1.5 rounded-md cursor-pointer select-none transition-all',
+          isDecksActive    ? 'tree-item-active' : 'hover:bg-white/5',
+          isRootDropTarget ? 'ring-2 ring-primary/50 bg-primary/10' : '',
+        ].join(' ')}
+        onClick={() => navigate('/decks')}
+        onContextMenu={e => openCtx(e, rootMenuItems)}
+        onDragOver={e => {
+          if (dragItem) {
+            e.stopPropagation();
+            handleDragOverTarget('root', e);
+          }
+        }}
+        onDrop={e => {
+          if (dragItem) {
+            e.stopPropagation();
+            e.preventDefault();
+            handleDropOnTarget('root');
+          }
+        }}
+      >
+        {/* Arrow — always pointing down (root is always expanded) */}
+        <span
+          className="material-symbols-outlined mr-1 flex-shrink-0 text-on-surface-variant/30"
+          style={{ fontSize: 16, transform: 'rotate(90deg)' }}
         >
-          <span
-            className="material-symbols-outlined mr-1 flex-shrink-0 disclosure-arrow text-on-surface-variant/30"
-            style={{ fontSize: 16 }}
-          >
-            chevron_right
+          chevron_right
+        </span>
+        <span
+          className="material-symbols-outlined mr-2 flex-shrink-0 text-on-surface-variant/60"
+          style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}
+        >
+          folder_special
+        </span>
+        <span
+          className={`flex-1 ${isDecksActive ? 'text-on-surface' : 'text-on-surface-variant'}`}
+          style={{ fontSize: 13 }}
+        >
+          My Decks
+        </span>
+        {isRootDropTarget && (
+          <span className="material-symbols-outlined ml-auto flex-shrink-0 text-primary/60" style={{ fontSize: 13 }}>
+            move_to_inbox
           </span>
-          <span
-            className="material-symbols-outlined mr-2 flex-shrink-0 text-on-surface-variant/60"
-            style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}
-          >
-            folder_special
-          </span>
-          <span className={`flex-1 ${isDecksActive ? 'text-on-surface' : 'text-on-surface-variant'}`} style={{ fontSize: 13 }}>My Decks</span>
-        </summary>
+        )}
+      </div>
 
-        <div className="ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5">
-          {folders.map(folder => <FolderItem key={folder.id} folder={folder} />)}
-          {rootDecks.map(deck => <DeckItem key={deck.id} deck={deck} />)}
-        </div>
-      </details>
+      {/* ── Children ── */}
+      <div className="ml-4 pl-3 border-l border-white/5 space-y-0.5 mt-0.5">
+        {folders.map(folder => <FolderItem key={folder.id} folder={folder} />)}
+        {rootDecks.map(deck => <DeckItem key={deck.id} deck={deck} />)}
+      </div>
 
-      {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxMenu.items} onClose={() => setCtxMenu(null)} />}
+      {ctxMenu && (
+        <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={ctxMenu.items} onClose={() => setCtxMenu(null)} />
+      )}
 
       <MoveDeckModal
         isOpen={!!moveModal}

@@ -5,13 +5,21 @@
   "description": "Karn Forge – MTG Deck Builder & Library Manager",
   "main": "main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"cross-env NODE_ENV=development electron .\"",
+    "dev": "concurrently \"vite\" \"cross-env NODE_ENV=development electron -r tsx/cjs .\"",
     "build": "vite build",
-    "start": "npm run build && electron .",
-    "postinstall": "electron-rebuild -f -w better-sqlite3 --module-dir ."
+    "start": "npm run build && electron -r tsx/cjs .",
+    "mcp": "electron -r tsx/cjs mcp/index.js",
+    "postinstall": "electron-rebuild -f -w better-sqlite3 --module-dir .",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "electron-builder": "^25.0.0",
+    "unzipper": "^0.12.3",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
@@ -21,17 +29,60 @@
     "electron": "^33.3.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.14"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "unzipper": "^0.12.3",
     "better-sqlite3": "^12.10.0",
     "mana-font": "^1.18.0",
     "marked": "^18.0.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1",
-    "stream-json": "^1.9.1",
     "zustand": "^5.0.13"
+  },
+  "build": {
+    "appId": "com.karnforge.app",
+    "productName": "Karn Forge",
+    "copyright": "Copyright © 2025",
+    "directories": { "output": "dist-electron" },
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "settings.js",
+      "ipc/**/*",
+      "db/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/arsenal",
+        "to": "arsenal",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "icon.png"
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "icon": "icon.png"
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon.png",
+      "installerHeaderIcon": "icon.png"
+    }
   }
 }

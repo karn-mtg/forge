@@ -93,16 +93,55 @@ CREATE INDEX IF NOT EXISTS idx_arrangements_deck_id  ON arrangements (deck_id);
 CREATE INDEX IF NOT EXISTS idx_collection_oracle_id  ON collection (oracle_id);
 CREATE INDEX IF NOT EXISTS idx_wishlist_oracle_id    ON wishlist (oracle_id);
 CREATE INDEX IF NOT EXISTS idx_activity_log_deck_id  ON activity_log (deck_id);
+
+CREATE TABLE IF NOT EXISTS recipients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'other',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  deck_id    INTEGER REFERENCES decks(id) ON DELETE SET NULL,
+  title      TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
+  content         TEXT NOT NULL,
+  ui_blocks       TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages (conversation_id);
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT NOT NULL UNIQUE,
+  value      TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
 `;
 
-function initLibrary(userDataPath) {
-  const dbPath = path.join(userDataPath, 'library.db');
+function initLibrary(userDir) {
+  require('fs').mkdirSync(userDir, { recursive: true });
+  const dbPath = path.join(userDir, 'library.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
   // Additive migrations for columns added after initial release
   try { db.exec('ALTER TABLE decks ADD COLUMN cover_image_url TEXT'); } catch {}
+  try { db.exec('ALTER TABLE decks ADD COLUMN recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL'); } catch {}
+  try { db.exec('ALTER TABLE deck_cards ADD COLUMN is_proxy INTEGER NOT NULL DEFAULT 0'); } catch {}
+  try { db.exec('ALTER TABLE collection ADD COLUMN recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL'); } catch {}
+  try { db.exec('ALTER TABLE ai_conversations ADD COLUMN declined_oracle_ids TEXT'); } catch {}
   return db;
 }
 
@@ -125,11 +164,18 @@ function getFolderTree(db) {
   return roots;
 }
 
-function createFolder(db, { name, parentId = null, icon = 'folder' }) {
+function createFolder(db, { name, parent_id = null, parentId = null, icon = 'folder' }) {
+  // Accept both snake_case (renderer) and camelCase (legacy) spellings
+  const pid = parent_id ?? parentId ?? null;
   const result = db
     .prepare('INSERT INTO folders (name, parent_id, icon) VALUES (?, ?, ?)')
-    .run(name, parentId, icon);
+    .run(name, pid, icon);
   return { id: result.lastInsertRowid };
+}
+
+function moveFolder(db, { id, parent_id = null }) {
+  db.prepare('UPDATE folders SET parent_id = ? WHERE id = ?').run(parent_id, id);
+  return { ok: true };
 }
 
 function renameFolder(db, { id, name }) {
@@ -147,20 +193,23 @@ function deleteFolder(db, { id }) {
 // ---------------------------------------------------------------------------
 
 function getDecks(db, { folderId = null } = {}) {
-  // Fix #5: replace correlated subquery with a single LEFT JOIN + GROUP BY
   if (folderId == null) {
     return db.prepare(`
-      SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count
+      SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count,
+             r.name AS recipient_name, r.type AS recipient_type
       FROM decks d
       LEFT JOIN deck_cards dc ON dc.deck_id = d.id
+      LEFT JOIN recipients r ON r.id = d.recipient_id
       GROUP BY d.id
       ORDER BY d.sort_order, d.name
     `).all();
   }
   return db.prepare(`
-    SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count
+    SELECT d.*, COALESCE(SUM(dc.quantity), 0) AS card_count,
+           r.name AS recipient_name, r.type AS recipient_type
     FROM decks d
     LEFT JOIN deck_cards dc ON dc.deck_id = d.id
+    LEFT JOIN recipients r ON r.id = d.recipient_id
     WHERE d.folder_id = ?
     GROUP BY d.id
     ORDER BY d.sort_order, d.name
@@ -177,7 +226,12 @@ function createDeck(db, { name, format = 'commander', folderId = null, colorIden
 }
 
 function getDeck(db, { id }) {
-  const deck = db.prepare('SELECT * FROM decks WHERE id = ?').get(id);
+  const deck = db.prepare(`
+    SELECT d.*, r.name AS recipient_name, r.type AS recipient_type
+    FROM decks d
+    LEFT JOIN recipients r ON r.id = d.recipient_id
+    WHERE d.id = ?
+  `).get(id);
   if (!deck) return null;
   const cards = db
     .prepare('SELECT * FROM deck_cards WHERE deck_id = ? ORDER BY board, sort_order, added_at')
@@ -188,7 +242,8 @@ function getDeck(db, { id }) {
 function updateDeck(db, { id, ...fields }) {
   const allowed = [
     'name', 'format', 'folder_id', 'description', 'cover_scryfall_id',
-    'cover_image_url', 'color_identity', 'power_level', 'is_favorite', 'sort_order'
+    'cover_image_url', 'color_identity', 'power_level', 'is_favorite', 'sort_order',
+    'recipient_id'
   ];
   const updates = Object.keys(fields).filter(k => allowed.includes(k));
   if (updates.length === 0) return { ok: true };
@@ -265,6 +320,39 @@ function duplicateDeck(db, { id }) {
 }
 
 // ---------------------------------------------------------------------------
+// Recipients
+// ---------------------------------------------------------------------------
+
+function getRecipients(db) {
+  return db.prepare('SELECT * FROM recipients ORDER BY name').all();
+}
+
+function createRecipient(db, { name, type = 'other', notes = null }) {
+  const result = db.prepare('INSERT INTO recipients (name, type, notes) VALUES (?, ?, ?)').run(name, type, notes);
+  return { id: result.lastInsertRowid };
+}
+
+function updateRecipient(db, { id, name, type, notes }) {
+  db.prepare('UPDATE recipients SET name = ?, type = ?, notes = ? WHERE id = ?').run(name, type, notes ?? null, id);
+  return { ok: true };
+}
+
+function deleteRecipient(db, { id }) {
+  db.prepare('DELETE FROM recipients WHERE id = ?').run(id);
+  return { ok: true };
+}
+
+function mountDeck(db, { id, recipientId }) {
+  db.prepare("UPDATE decks SET recipient_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(recipientId, id);
+  return { ok: true };
+}
+
+function unmountDeck(db, { id }) {
+  db.prepare("UPDATE decks SET recipient_id = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(id);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Collection
 // ---------------------------------------------------------------------------
 
@@ -286,9 +374,52 @@ function removeFromCollection(db, { id }) {
   return { ok: true };
 }
 
-function updateCollectionEntry(db, { id, quantity, condition, foil, acquiredPrice }) {
-  db.prepare('UPDATE collection SET quantity = ?, condition = ?, foil = ?, acquired_price_usd = ? WHERE id = ?')
-    .run(quantity, condition, foil ? 1 : 0, acquiredPrice ?? null, id);
+function updateCollectionEntry(db, { id, quantity, condition, foil, acquiredPrice, recipientId }) {
+  db.prepare('UPDATE collection SET quantity = ?, condition = ?, foil = ?, acquired_price_usd = ?, recipient_id = ? WHERE id = ?')
+    .run(quantity, condition, foil ? 1 : 0, acquiredPrice ?? null, recipientId ?? null, id);
+  return { ok: true };
+}
+
+function getDeckCardStatuses(db, { deckId }) {
+  const rows = db.prepare(`
+    SELECT
+      dc.oracle_id,
+      dc.scryfall_id AS deck_scryfall,
+      dc.is_proxy,
+      d.recipient_id,
+      COALESCE((SELECT SUM(c.quantity) FROM collection c
+        WHERE c.oracle_id = dc.oracle_id
+          AND c.recipient_id = d.recipient_id
+          AND c.scryfall_id = dc.scryfall_id), 0) AS in_recipient_same,
+      COALESCE((SELECT SUM(c.quantity) FROM collection c
+        WHERE c.oracle_id = dc.oracle_id
+          AND c.recipient_id = d.recipient_id), 0) AS in_recipient_any,
+      COALESCE((SELECT SUM(c.quantity) FROM collection c
+        WHERE c.oracle_id = dc.oracle_id), 0) AS in_collection_any
+    FROM deck_cards dc
+    JOIN decks d ON d.id = dc.deck_id
+    WHERE dc.deck_id = ?
+  `).all(deckId);
+
+  const result = {};
+  for (const row of rows) {
+    if (row.is_proxy) {
+      result[row.oracle_id] = 'proxy';
+    } else if (row.recipient_id && row.in_recipient_same > 0) {
+      result[row.oracle_id] = 'in-recipient';
+    } else if (row.recipient_id && row.in_recipient_any > 0) {
+      result[row.oracle_id] = 'in-recipient-diff';
+    } else if (row.in_collection_any > 0) {
+      result[row.oracle_id] = 'in-collection';
+    } else {
+      result[row.oracle_id] = 'missing';
+    }
+  }
+  return result;
+}
+
+function updateCardProxy(db, { id, isProxy }) {
+  db.prepare('UPDATE deck_cards SET is_proxy = ? WHERE id = ?').run(isProxy ? 1 : 0, id);
   return { ok: true };
 }
 
@@ -391,12 +522,136 @@ function loadArrangementCanvas(db, { id }) {
   return row ? { canvasJson: row.canvas_json } : null;
 }
 
+// ---------------------------------------------------------------------------
+// AI Conversations
+// ---------------------------------------------------------------------------
+
+function createAIConversation(db, { deckId = null, title = null } = {}) {
+  const result = db
+    .prepare('INSERT INTO ai_conversations (deck_id, title) VALUES (?, ?)')
+    .run(deckId, title);
+  return { id: result.lastInsertRowid };
+}
+
+function getAIConversation(db, { id }) {
+  const conv = db.prepare('SELECT * FROM ai_conversations WHERE id = ?').get(id);
+  if (!conv) return null;
+  const messages = db
+    .prepare('SELECT * FROM ai_messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .all(id)
+    .map(m => ({
+      ...m,
+      ui_blocks: m.ui_blocks ? JSON.parse(m.ui_blocks) : null,
+    }));
+  return { ...conv, messages };
+}
+
+function getAIConversations(db, { deckId } = {}) {
+  if (deckId != null) {
+    return db
+      .prepare('SELECT * FROM ai_conversations WHERE deck_id = ? ORDER BY created_at DESC')
+      .all(deckId);
+  }
+  return db.prepare('SELECT * FROM ai_conversations ORDER BY created_at DESC').all();
+}
+
+function deleteAIConversation(db, { id }) {
+  db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(id);
+  return { ok: true };
+}
+
+function getDeclinedOracleIds(db, { conversationId }) {
+  const row = db.prepare('SELECT declined_oracle_ids FROM ai_conversations WHERE id = ?').get(conversationId);
+  if (!row || !row.declined_oracle_ids) return [];
+  try { return JSON.parse(row.declined_oracle_ids); } catch { return []; }
+}
+
+function addDeclinedOracleId(db, { conversationId, oracleId }) {
+  const current = getDeclinedOracleIds(db, { conversationId });
+  if (current.includes(oracleId)) return { ok: true };
+  const updated = [...current, oracleId];
+  db.prepare('UPDATE ai_conversations SET declined_oracle_ids = ? WHERE id = ?')
+    .run(JSON.stringify(updated), conversationId);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// AI Messages
+// ---------------------------------------------------------------------------
+
+function appendAIMessage(db, { conversationId, role, content, uiBlocks = null }) {
+  const result = db
+    .prepare('INSERT INTO ai_messages (conversation_id, role, content, ui_blocks) VALUES (?, ?, ?, ?)')
+    .run(conversationId, role, content, uiBlocks ? JSON.stringify(uiBlocks) : null);
+  return { id: result.lastInsertRowid };
+}
+
+function getMostUsedCards(db, { limit = 10 } = {}) {
+  return db.prepare(`
+    SELECT dc.oracle_id, COUNT(DISTINCT dc.deck_id) AS deck_count
+    FROM deck_cards dc
+    WHERE dc.board NOT IN ('sideboard')
+    GROUP BY dc.oracle_id
+    ORDER BY deck_count DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+function getDecksWithCard(db, { oracleId, excludeDeckId = null }) {
+  let sql = `
+    SELECT DISTINCT d.id, d.name
+    FROM deck_cards dc
+    JOIN decks d ON d.id = dc.deck_id
+    WHERE dc.oracle_id = ? AND dc.board != 'sideboard'
+  `;
+  const params = [oracleId];
+  if (excludeDeckId != null) {
+    sql += ' AND d.id != ?';
+    params.push(excludeDeckId);
+  }
+  sql += ' ORDER BY d.name LIMIT 20';
+  return db.prepare(sql).all(...params);
+}
+
+// ---------------------------------------------------------------------------
+// Agent Memory
+// ---------------------------------------------------------------------------
+
+function getAgentMemories(db) {
+  return db.prepare('SELECT key, value, updated_at FROM agent_memory ORDER BY updated_at DESC').all();
+}
+
+function upsertAgentMemory(db, { key, value }) {
+  db.prepare(`
+    INSERT INTO agent_memory (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+  `).run(key, value);
+  return { ok: true };
+}
+
+function deleteAgentMemory(db, { key }) {
+  db.prepare('DELETE FROM agent_memory WHERE key = ?').run(key);
+  return { ok: true };
+}
+
+function getAIMessages(db, { conversationId, limit = 20 }) {
+  const rows = db
+    .prepare('SELECT * FROM ai_messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(conversationId, limit);
+  // Return oldest-first
+  return rows.reverse().map(m => ({
+    ...m,
+    ui_blocks: m.ui_blocks ? JSON.parse(m.ui_blocks) : null,
+  }));
+}
+
 module.exports = {
   initLibrary,
   getFolderTree,
   createFolder,
   renameFolder,
   deleteFolder,
+  moveFolder,
   getDecks,
   createDeck,
   getDeck,
@@ -408,10 +663,18 @@ module.exports = {
   removeCardFromDeck,
   updateCardBoard,
   updateCardQuantity,
+  getRecipients,
+  createRecipient,
+  updateRecipient,
+  deleteRecipient,
+  mountDeck,
+  unmountDeck,
   getCollection,
   addToCollection,
   removeFromCollection,
   updateCollectionEntry,
+  getDeckCardStatuses,
+  updateCardProxy,
   getWishlist,
   addToWishlist,
   removeFromWishlist,
@@ -426,4 +689,17 @@ module.exports = {
   deleteArrangement,
   saveArrangementCanvas,
   loadArrangementCanvas,
+  createAIConversation,
+  getAIConversation,
+  getAIConversations,
+  deleteAIConversation,
+  getDeclinedOracleIds,
+  addDeclinedOracleId,
+  appendAIMessage,
+  getAIMessages,
+  getMostUsedCards,
+  getDecksWithCard,
+  getAgentMemories,
+  upsertAgentMemory,
+  deleteAgentMemory,
 };

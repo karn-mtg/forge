@@ -4,6 +4,7 @@ import { useLibraryStore } from '../store/useLibraryStore';
 import { useSearchStore } from '../store/useSearchStore';
 import { useFilteredDecks } from '../hooks/useFilteredDecks';
 import type { DeckSortKey } from '../hooks/useFilteredDecks';
+import type { Card } from '../types/electron';
 import { DeckCard, NewDeckCard } from '../components/DeckCard';
 import { NewDeckModal } from '../components/NewDeckModal';
 import { ActivityChart } from '../components/charts/ActivityChart';
@@ -19,11 +20,32 @@ export function Dashboard() {
   const [formatFilter, setFormatFilter] = useState('');
   const [sortBy, setSortBy] = useState<DeckSortKey>('updated');
   const [showFilters, setShowFilters] = useState(false);
+  const [mostUsed, setMostUsed] = useState<{ oracleId: string; deckCount: number; name?: string; artUrl?: string }[]>([]);
 
   useEffect(() => {
     setPlaceholder('Search decks…');
     return () => reset();
   }, [setPlaceholder, reset]);
+
+  useEffect(() => {
+    window.libraryAPI.getMostUsedCards({ limit: 10 }).then(async rows => {
+      if (!rows?.length) return;
+      const oracleIds = rows.map(r => r.oracle_id);
+      let cards: Card[] = [];
+      try { cards = (await window.cardsAPI.getCardsBatch({ oracleIds })) || []; } catch {}
+      const cardMap = new Map(cards.map(c => [c.oracle_id, c]));
+      setMostUsed(rows.map(r => {
+        const c = cardMap.get(r.oracle_id);
+        const fd = (c?.full_data || {}) as Record<string, any>;
+        return {
+          oracleId: r.oracle_id,
+          deckCount: r.deck_count,
+          name: c?.name,
+          artUrl: fd.image_uris?.art_crop || fd.card_faces?.[0]?.image_uris?.art_crop || '',
+        };
+      }));
+    }).catch(() => {});
+  }, []);
 
   // Show at most 8 decks on the dashboard unless the user is actively filtering
   const displayed = useFilteredDecks(decks, { search, formatFilter, sortBy, limit: 8 });
@@ -115,6 +137,68 @@ export function Dashboard() {
               </div>
             )}
           </section>
+
+          {/* Format breakdown + Most-used cards */}
+          {decks.length > 0 && (
+            <section>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Format breakdown bar chart */}
+                <div className="bg-surface border border-white/5 rounded-2xl p-5 shadow-xl">
+                  <h3 className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-4">Decks by Format</h3>
+                  {(() => {
+                    const counts: Record<string, number> = {};
+                    for (const d of decks) {
+                      const f = d.format || 'other';
+                      counts[f] = (counts[f] || 0) + 1;
+                    }
+                    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                    const max = sorted[0]?.[1] || 1;
+                    const FORMAT_COLORS: Record<string, string> = {
+                      commander: '#f2ca83', modern: '#7eb8f7', standard: '#86efac',
+                      pioneer: '#c084fc', legacy: '#f87171', pauper: '#fbbf24', vintage: '#94a3b8',
+                    };
+                    return (
+                      <div className="space-y-2">
+                        {sorted.map(([fmt, cnt]) => (
+                          <div key={fmt} className="flex items-center gap-3">
+                            <span className="text-[10px] font-bold capitalize text-on-surface-variant/60 w-20 flex-shrink-0">{fmt}</span>
+                            <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{ width: `${(cnt / max) * 100}%`, background: FORMAT_COLORS[fmt] || '#6b7280' }}
+                              />
+                            </div>
+                            <span className="text-[10px] font-bold tabular-nums text-on-surface-variant/40 w-6 text-right">{cnt}</span>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Most-used cards */}
+                {mostUsed.length > 0 && (
+                  <div className="bg-surface border border-white/5 rounded-2xl p-5 shadow-xl">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant/40 mb-4">Most-Used Cards</h3>
+                    <div className="space-y-1.5">
+                      {mostUsed.map((c, i) => (
+                        <div key={c.oracleId} className="flex items-center gap-3">
+                          <span className="text-[10px] font-black tabular-nums text-on-surface-variant/25 w-4">{i + 1}</span>
+                          {c.artUrl ? (
+                            <img src={c.artUrl} alt="" className="w-8 h-6 rounded object-cover flex-shrink-0" />
+                          ) : (
+                            <div className="w-8 h-6 rounded flex-shrink-0" style={{ background: 'rgba(255,255,255,0.04)' }} />
+                          )}
+                          <span className="flex-1 text-[11px] font-medium text-on-surface truncate">{c.name || c.oracleId}</span>
+                          <span className="text-[10px] font-bold tabular-nums text-on-surface-variant/40">{c.deckCount} deck{c.deckCount !== 1 ? 's' : ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
 
         </div>
       </main>

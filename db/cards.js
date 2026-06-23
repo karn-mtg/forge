@@ -3,222 +3,37 @@
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const SCHEMA = `
-  PRAGMA journal_mode=WAL;
-  PRAGMA synchronous=NORMAL;
-
-  CREATE TABLE IF NOT EXISTS cards (
-    oracle_id        TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    lang             TEXT,
-    layout           TEXT,
-    mana_cost        TEXT,
-    cmc              REAL,
-    type_line        TEXT,
-    oracle_text      TEXT,
-    power            TEXT,
-    toughness        TEXT,
-    loyalty          TEXT,
-    defense          TEXT,
-    hand_modifier    TEXT,
-    life_modifier    TEXT,
-    colors           TEXT,
-    color_identity   TEXT,
-    produced_mana    TEXT,
-    keywords         TEXT,
-    legalities       TEXT,
-    games            TEXT,
-    reserved         INTEGER,
-    edhrec_rank      INTEGER,
-    penny_rank       INTEGER,
-    all_parts        TEXT,
-    prices           TEXT,
-    purchase_uris    TEXT,
-    rulings_uri      TEXT,
-    scryfall_uri     TEXT,
-    sets             TEXT,
-    full_data        TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS tokens (
-    id               TEXT PRIMARY KEY,
-    oracle_id        TEXT,
-    name             TEXT NOT NULL,
-    layout           TEXT,
-    type_line        TEXT,
-    oracle_text      TEXT,
-    power            TEXT,
-    toughness        TEXT,
-    colors           TEXT,
-    color_identity   TEXT,
-    keywords         TEXT,
-    all_parts        TEXT,
-    full_data        TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS card_images (
-    id               TEXT PRIMARY KEY,
-    oracle_id        TEXT NOT NULL REFERENCES cards(oracle_id),
-    set_code         TEXT,
-    set_name         TEXT,
-    set_type         TEXT,
-    rarity           TEXT,
-    released_at      TEXT,
-    collector_number TEXT,
-    artist           TEXT,
-    frame            TEXT,
-    frame_effects    TEXT,
-    promo            INTEGER,
-    reprint          INTEGER,
-    variation        INTEGER,
-    story_spotlight  INTEGER,
-    prices           TEXT,
-    purchase_uris    TEXT,
-    image_uris       TEXT,
-    card_faces       TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS token_images (
-    id               TEXT PRIMARY KEY,
-    token_oracle_id  TEXT,
-    set_code         TEXT,
-    set_name         TEXT,
-    released_at      TEXT,
-    collector_number TEXT,
-    artist           TEXT,
-    image_uris       TEXT,
-    card_faces       TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS metadata (
-    id                  INTEGER PRIMARY KEY CHECK (id = 1),
-    last_updated_at     TEXT,
-    source_updated_at   TEXT,
-    file_size           INTEGER,
-    card_count          INTEGER,
-    token_count         INTEGER
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_cards_name       ON cards (name);
-  CREATE INDEX IF NOT EXISTS idx_cards_type_line  ON cards (type_line);
-  CREATE INDEX IF NOT EXISTS idx_cards_cmc        ON cards (cmc);
-  CREATE INDEX IF NOT EXISTS idx_images_oracle_id ON card_images (oracle_id);
-  CREATE INDEX IF NOT EXISTS idx_images_set_code  ON card_images (set_code);
-  CREATE INDEX IF NOT EXISTS idx_tokens_name      ON tokens (name);
-
-  -- Fix #1: FTS5 virtual table for full-text search (content table — no duplicate storage)
-  CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
-    name,
-    type_line,
-    oracle_text,
-    content='cards',
-    content_rowid='rowid'
+// karnforge only owns the AI metadata table — the rest of the schema is
+// created and maintained by karn-arsenal (prints_builder.py).
+const AI_METADATA_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS ai_card_metadata (
+    oracle_id      TEXT PRIMARY KEY REFERENCES cards(oracle_id),
+    archetype_tags TEXT,
+    synergy_pairs  TEXT,
+    role_tags      TEXT,
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   );
 `;
 
-function initCards(userDataPath) {
-  const dbPath = path.join(userDataPath, 'cards.db');
+/**
+ * Opens prints.db created by karn-arsenal. Returns null if the file doesn't
+ * exist yet — the caller must handle null gracefully.
+ */
+function initCards(arsenalDataDir) {
+  const dbPath = path.join(arsenalDataDir, 'prints.db');
+  if (!require('fs').existsSync(dbPath)) {
+    console.log('[cards] prints.db not found — waiting for karn-arsenal to initialise it');
+    return null;
+  }
+  console.log('[cards] Opening arsenal prints.db:', dbPath);
   const db = new Database(dbPath);
-  db.exec(SCHEMA);
 
-  // Fix #1: If cards exist but FTS index is empty (e.g. first run after upgrade),
-  // rebuild the FTS index so searches work immediately without a full re-sync.
-  try {
-    const cardCount = db.prepare('SELECT COUNT(*) AS n FROM cards').get().n;
-    const ftsCount  = db.prepare('SELECT COUNT(*) AS n FROM cards_fts').get().n;
-    if (cardCount > 0 && ftsCount === 0) {
-      db.exec(`INSERT INTO cards_fts(cards_fts) VALUES('rebuild')`);
-    }
-  } catch { /* FTS not critical on startup */ }
+  // karnforge-owned table only — karn-arsenal owns the rest
+  db.exec(AI_METADATA_SCHEMA);
+  try { db.exec('ALTER TABLE ai_card_metadata ADD COLUMN edhrec_inclusion_pct REAL'); } catch {}
+  try { db.exec('ALTER TABLE ai_card_metadata ADD COLUMN edhrec_updated_at TEXT'); } catch {}
 
   return db;
-}
-
-// ---------------------------------------------------------------------------
-// Fix #8: Prepared-statement cache
-// better-sqlite3 prepare() compiles SQL on every call. During sync we call
-// insertCard/insertToken/insertCardImage/insertTokenImage ~30 000 times each,
-// so we compile once and reuse the same Statement object.
-// ---------------------------------------------------------------------------
-
-let _stmtDb   = null;   // tracks which db instance owns the cache
-let _stmtCache = null;
-
-function getStmts(db) {
-  if (db === _stmtDb) return _stmtCache;
-  _stmtDb = db;
-  _stmtCache = {
-    insertCard: db.prepare(`
-      INSERT OR IGNORE INTO cards (
-        oracle_id, name, lang, layout,
-        mana_cost, cmc, type_line, oracle_text,
-        power, toughness, loyalty, defense,
-        hand_modifier, life_modifier,
-        colors, color_identity, produced_mana,
-        keywords, legalities, games,
-        reserved, edhrec_rank, penny_rank,
-        all_parts, prices, purchase_uris,
-        rulings_uri, scryfall_uri,
-        full_data
-      ) VALUES (
-        @oracle_id, @name, @lang, @layout,
-        @mana_cost, @cmc, @type_line, @oracle_text,
-        @power, @toughness, @loyalty, @defense,
-        @hand_modifier, @life_modifier,
-        @colors, @color_identity, @produced_mana,
-        @keywords, @legalities, @games,
-        @reserved, @edhrec_rank, @penny_rank,
-        @all_parts, @prices, @purchase_uris,
-        @rulings_uri, @scryfall_uri,
-        @full_data
-      )
-    `),
-    insertToken: db.prepare(`
-      INSERT OR IGNORE INTO tokens (
-        id, oracle_id, name, layout, type_line, oracle_text,
-        power, toughness, colors, color_identity,
-        keywords, all_parts, full_data
-      ) VALUES (
-        @id, @oracle_id, @name, @layout, @type_line, @oracle_text,
-        @power, @toughness, @colors, @color_identity,
-        @keywords, @all_parts, @full_data
-      )
-    `),
-    insertCardImage: db.prepare(`
-      INSERT OR IGNORE INTO card_images (
-        id, oracle_id, set_code, set_name, set_type,
-        rarity, released_at, collector_number, artist,
-        frame, frame_effects,
-        promo, reprint, variation, story_spotlight,
-        prices, purchase_uris,
-        image_uris, card_faces
-      ) VALUES (
-        @id, @oracle_id, @set_code, @set_name, @set_type,
-        @rarity, @released_at, @collector_number, @artist,
-        @frame, @frame_effects,
-        @promo, @reprint, @variation, @story_spotlight,
-        @prices, @purchase_uris,
-        @image_uris, @card_faces
-      )
-    `),
-    insertTokenImage: db.prepare(`
-      INSERT OR IGNORE INTO token_images (
-        id, token_oracle_id, set_code, set_name,
-        released_at, collector_number, artist,
-        image_uris, card_faces
-      ) VALUES (
-        @id, @token_oracle_id, @set_code, @set_name,
-        @released_at, @collector_number, @artist,
-        @image_uris, @card_faces
-      )
-    `),
-  };
-  return _stmtCache;
-}
-
-function toJson(value) {
-  if (value == null) return null;
-  return JSON.stringify(value);
 }
 
 function fromJson(str) {
@@ -238,139 +53,6 @@ function getTokenCount(db) {
   return db.prepare('SELECT COUNT(*) AS n FROM tokens').get().n;
 }
 
-function clearAll(db) {
-  db.exec(`
-    DELETE FROM token_images;
-    DELETE FROM card_images;
-    DELETE FROM tokens;
-    DELETE FROM cards;
-  `);
-}
-
-function insertCard(db, card) {
-  getStmts(db).insertCard.run({
-    oracle_id:      card.oracle_id || card.id,
-    name:           card.name,
-    lang:           card.lang || null,
-    layout:         card.layout || null,
-    mana_cost:      card.mana_cost || null,
-    cmc:            card.cmc != null ? card.cmc : null,
-    type_line:      card.type_line || null,
-    oracle_text:    card.oracle_text || null,
-    power:          card.power || null,
-    toughness:      card.toughness || null,
-    loyalty:        card.loyalty || null,
-    defense:        card.defense || null,
-    hand_modifier:  card.hand_modifier || null,
-    life_modifier:  card.life_modifier || null,
-    colors:         toJson(card.colors),
-    color_identity: toJson(card.color_identity),
-    produced_mana:  toJson(card.produced_mana),
-    keywords:       toJson(card.keywords),
-    legalities:     toJson(card.legalities),
-    games:          toJson(card.games),
-    reserved:       card.reserved ? 1 : 0,
-    edhrec_rank:    card.edhrec_rank != null ? card.edhrec_rank : null,
-    penny_rank:     card.penny_rank != null ? card.penny_rank : null,
-    all_parts:      toJson(card.all_parts),
-    prices:         toJson(card.prices),
-    purchase_uris:  toJson(card.purchase_uris),
-    rulings_uri:    card.rulings_uri || null,
-    scryfall_uri:   card.scryfall_uri || null,
-    full_data:      JSON.stringify(card),
-  });
-}
-
-function insertToken(db, card) {
-  getStmts(db).insertToken.run({
-    id:             card.id,
-    oracle_id:      card.oracle_id || null,
-    name:           card.name,
-    layout:         card.layout || null,
-    type_line:      card.type_line || null,
-    oracle_text:    card.oracle_text || null,
-    power:          card.power || null,
-    toughness:      card.toughness || null,
-    colors:         toJson(card.colors),
-    color_identity: toJson(card.color_identity),
-    keywords:       toJson(card.keywords),
-    all_parts:      toJson(card.all_parts),
-    full_data:      JSON.stringify(card),
-  });
-}
-
-function insertCardImage(db, card) {
-  getStmts(db).insertCardImage.run({
-    id:               card.id,
-    oracle_id:        card.oracle_id || card.id,
-    set_code:         card.set || null,
-    set_name:         card.set_name || null,
-    set_type:         card.set_type || null,
-    rarity:           card.rarity || null,
-    released_at:      card.released_at || null,
-    collector_number: card.collector_number || null,
-    artist:           card.artist || null,
-    frame:            card.frame || null,
-    frame_effects:    toJson(card.frame_effects),
-    promo:            card.promo ? 1 : 0,
-    reprint:          card.reprint ? 1 : 0,
-    variation:        card.variation ? 1 : 0,
-    story_spotlight:  card.story_spotlight ? 1 : 0,
-    prices:           toJson(card.prices),
-    purchase_uris:    toJson(card.purchase_uris),
-    image_uris:       toJson(card.image_uris),
-    card_faces:       toJson(card.card_faces),
-  });
-}
-
-function insertTokenImage(db, card) {
-  getStmts(db).insertTokenImage.run({
-    id:               card.id,
-    token_oracle_id:  card.oracle_id || null,
-    set_code:         card.set || null,
-    set_name:         card.set_name || null,
-    released_at:      card.released_at || null,
-    collector_number: card.collector_number || null,
-    artist:           card.artist || null,
-    image_uris:       toJson(card.image_uris),
-    card_faces:       toJson(card.card_faces),
-  });
-}
-
-function updateCardSets(db) {
-  db.exec(`
-    UPDATE cards
-    SET sets = (
-      SELECT json_group_array(set_code)
-      FROM (
-        SELECT DISTINCT set_code
-        FROM card_images
-        WHERE card_images.oracle_id = cards.oracle_id
-          AND set_code IS NOT NULL
-        ORDER BY set_code
-      )
-    )
-  `);
-}
-
-function updateMetadata(db, { sourceUpdatedAt, fileSize, cardCount, tokenCount }) {
-  db.prepare(`
-    INSERT INTO metadata (id, last_updated_at, source_updated_at, file_size, card_count, token_count)
-    VALUES (1, @now, @sourceUpdatedAt, @fileSize, @cardCount, @tokenCount)
-    ON CONFLICT(id) DO UPDATE SET
-      last_updated_at   = excluded.last_updated_at,
-      source_updated_at = excluded.source_updated_at,
-      file_size         = excluded.file_size,
-      card_count        = excluded.card_count,
-      token_count       = excluded.token_count
-  `).run({
-    now:            new Date().toISOString(),
-    sourceUpdatedAt: sourceUpdatedAt || null,
-    fileSize:        fileSize || 0,
-    cardCount:       cardCount || 0,
-    tokenCount:      tokenCount || 0,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Fix #1 + #2: FTS5-based search with server-side colour filtering
@@ -451,6 +133,17 @@ function buildGameChangerWhere(gameChanger) {
   return `AND json_extract(c.full_data, '$.game_changer') = 1`;
 }
 
+// maxPriceUsd — filters by the USD price stored in the cards.prices JSON column
+function buildPriceWhere(maxPriceUsd) {
+  if (maxPriceUsd == null || maxPriceUsd === '') return '';
+  const n = Number(maxPriceUsd);
+  if (isNaN(n) || n <= 0) return '';
+  return `AND (
+    CAST(json_extract(c.prices, '$.usd') AS REAL) <= ${n}
+    OR json_extract(c.prices, '$.usd') IS NULL
+  )`;
+}
+
 // power / toughness — GLOB guards against non-numeric values like '*'
 function buildPowerWhere(min, max) {
   const parts = [];
@@ -466,6 +159,55 @@ function buildToughnessWhere(min, max) {
   return parts.length ? `AND c.toughness GLOB '[0-9]*' AND ${parts.join(' AND ')}` : '';
 }
 
+function buildKeywordsWhere(keywords) {
+  if (!keywords || !keywords.length) return '';
+  const clauses = keywords.map(k => `c.keywords LIKE '%"${k.replace(/"/g, '').replace(/'/g, '')}"%'`);
+  return `AND (${clauses.join(' AND ')})`;
+}
+
+function buildLoyaltyWhere(min, max) {
+  const parts = [];
+  if (min != null && min !== '') parts.push(`CAST(c.loyalty AS REAL) >= ${Number(min)}`);
+  if (max != null && max !== '') parts.push(`CAST(c.loyalty AS REAL) <= ${Number(max)}`);
+  return parts.length ? `AND c.loyalty GLOB '[0-9]*' AND ${parts.join(' AND ')}` : '';
+}
+
+function buildColorCountWhere(colorCount, colorCountOp) {
+  if (colorCount == null || colorCount === '') return '';
+  const n = Number(colorCount);
+  if (isNaN(n)) return '';
+  const len = `json_array_length(c.color_identity)`;
+  if (n === 0) return `AND (${len} = 0 OR c.color_identity IS NULL)`;
+  if (colorCountOp === 'at-most')  return `AND ${len} <= ${n}`;
+  if (colorCountOp === 'at-least') return `AND ${len} >= ${n}`;
+  return `AND ${len} = ${n}`;
+}
+
+function buildLayoutWhere(layouts) {
+  if (!layouts || !layouts.length) return '';
+  const SAFE = /^[a-z_]+$/;
+  const vals = layouts.filter(l => SAFE.test(l)).map(l => `'${l}'`).join(',');
+  return vals ? `AND c.layout IN (${vals})` : '';
+}
+
+function buildReservedWhere(reserved) {
+  return reserved ? `AND c.reserved = 1` : '';
+}
+
+function buildEdhrecRankWhere(edhrecRankMax) {
+  if (edhrecRankMax == null || edhrecRankMax === '') return '';
+  const n = Number(edhrecRankMax);
+  if (isNaN(n) || n <= 0) return '';
+  return `AND c.edhrec_rank IS NOT NULL AND c.edhrec_rank <= ${n}`;
+}
+
+function buildProducedManaWhere(producedMana) {
+  if (!producedMana || !producedMana.length) return '';
+  const SAFE = /^[WUBRGC]$/;
+  const clauses = producedMana.filter(c => SAFE.test(c)).map(c => `c.produced_mana LIKE '%"${c}"%'`);
+  return clauses.length ? `AND (${clauses.join(' OR ')})` : '';
+}
+
 function searchCards(db, {
   q = '', page = 1, pageSize = 20,
   colors = [], searchIn = 'all',
@@ -473,6 +215,14 @@ function searchCards(db, {
   setCode = '', legality = '', gameChanger = false,
   powerMin = null, powerMax = null,
   toughnessMin = null, toughnessMax = null,
+  maxPriceUsd = null,
+  keywords = [],
+  loyaltyMin = null, loyaltyMax = null,
+  colorCount = null, colorCountOp = 'exactly',
+  layouts = [],
+  reserved = false,
+  edhrecRankMax = null,
+  producedMana = [],
 } = {}) {
   const offset     = (page - 1) * pageSize;
   const ftsQuery   = q ? toFtsQuery(q, searchIn) : null;
@@ -486,13 +236,25 @@ function searchCards(db, {
     buildGameChangerWhere(gameChanger),
     buildPowerWhere(powerMin, powerMax),
     buildToughnessWhere(toughnessMin, toughnessMax),
+    buildPriceWhere(maxPriceUsd),
+    buildKeywordsWhere(keywords),
+    buildLoyaltyWhere(loyaltyMin, loyaltyMax),
+    buildColorCountWhere(colorCount, colorCountOp),
+    buildLayoutWhere(layouts),
+    buildReservedWhere(reserved),
+    buildEdhrecRankWhere(edhrecRankMax),
+    buildProducedManaWhere(producedMana),
   ].join(' ');
 
   const hasAnyFilter = ftsQuery || colors.length || types.length ||
     cmcMin != null || cmcMax != null || rarities.length ||
     setCode || legality || gameChanger ||
     powerMin != null || powerMax != null ||
-    toughnessMin != null || toughnessMax != null;
+    toughnessMin != null || toughnessMax != null ||
+    (maxPriceUsd != null && maxPriceUsd !== '') ||
+    keywords.length || loyaltyMin != null || loyaltyMax != null ||
+    colorCount != null || layouts.length || reserved ||
+    edhrecRankMax != null || producedMana.length;
 
   if (!hasAnyFilter) return { cards: [] };
 
@@ -522,11 +284,6 @@ function searchCards(db, {
   };
 }
 
-// Called at end of sync to rebuild the FTS index from the cards table.
-function rebuildFts(db) {
-  db.exec(`INSERT INTO cards_fts(cards_fts) VALUES('rebuild')`);
-}
-
 function getCard(db, { oracleId }) {
   const row = db.prepare('SELECT * FROM cards WHERE oracle_id = ?').get(oracleId);
   if (!row) return null;
@@ -552,21 +309,123 @@ function getCardsBatch(db, { oracleIds }) {
   return rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) }));
 }
 
+function getCardsByNames(db, { names }) {
+  if (!names || !names.length) return [];
+  const placeholders = names.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM cards WHERE name IN (${placeholders})`).all(...names);
+  return rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) }));
+}
+
+function getRoleTags(db, { oracleIds }) {
+  if (!oracleIds || !oracleIds.length) return {};
+  const placeholders = oracleIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT oracle_id, role_tags FROM ai_card_metadata WHERE oracle_id IN (${placeholders})`
+  ).all(...oracleIds);
+  const result = {};
+  for (const row of rows) {
+    result[row.oracle_id] = row.role_tags ? JSON.parse(row.role_tags) : [];
+  }
+  return result;
+}
+
+function searchByRole(db, { roles = [], pageSize = 60 } = {}) {
+  if (!roles || !roles.length) return { cards: [] };
+  const conditions = roles.map(() => `m.role_tags LIKE ?`).join(' OR ');
+  const params = roles.map(r => `%"${r}"%`);
+  const rows = db.prepare(`
+    SELECT c.* FROM cards c
+    JOIN ai_card_metadata m ON c.oracle_id = m.oracle_id
+    WHERE ${conditions}
+    ORDER BY c.edhrec_rank ASC NULLS LAST, c.name ASC
+    LIMIT ?
+  `).all(...params, pageSize);
+  return { cards: rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) })) };
+}
+
+// ---------------------------------------------------------------------------
+// AI Card Metadata
+// ---------------------------------------------------------------------------
+
+function getCardMetadata(db, { oracleIds }) {
+  if (!oracleIds || !oracleIds.length) return {};
+  const placeholders = oracleIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT * FROM ai_card_metadata WHERE oracle_id IN (${placeholders})`)
+    .all(...oracleIds);
+  const map = {};
+  for (const row of rows) {
+    map[row.oracle_id] = {
+      archetype_tags: row.archetype_tags ? JSON.parse(row.archetype_tags) : [],
+      role_tags:      row.role_tags      ? JSON.parse(row.role_tags)      : [],
+      synergy_pairs:  row.synergy_pairs  ? JSON.parse(row.synergy_pairs)  : [],
+    };
+  }
+  return map;
+}
+
+function upsertCardMetadata(db, { oracleId, roleTags, archetypeTags, synergyPairs }) {
+  db.prepare(`
+    INSERT OR REPLACE INTO ai_card_metadata (oracle_id, role_tags, archetype_tags, synergy_pairs, updated_at)
+    VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  `).run(
+    oracleId,
+    roleTags      ? JSON.stringify(roleTags)      : null,
+    archetypeTags ? JSON.stringify(archetypeTags) : null,
+    synergyPairs  ? JSON.stringify(synergyPairs)  : null,
+  );
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// EDHREC Inclusion Cache (persisted in ai_card_metadata)
+// ---------------------------------------------------------------------------
+
+const EDHREC_STALE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/** Returns a map of oracle_id → { pct, updatedAt } for all requested IDs. */
+function getCachedEdhrec(db, oracleIds) {
+  if (!oracleIds || !oracleIds.length) return {};
+  const ph = oracleIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT oracle_id, edhrec_inclusion_pct, edhrec_updated_at
+    FROM ai_card_metadata WHERE oracle_id IN (${ph})
+  `).all(...oracleIds);
+  const map = {};
+  for (const r of rows) {
+    map[r.oracle_id] = { pct: r.edhrec_inclusion_pct, updatedAt: r.edhrec_updated_at };
+  }
+  return map;
+}
+
+/** Upserts EDHREC inclusion data; never overwrites role_tags or archetype_tags. */
+function upsertEdhrecBatch(db, entries) {
+  if (!entries || !entries.length) return;
+  const stmt = db.prepare(`
+    INSERT INTO ai_card_metadata (oracle_id, edhrec_inclusion_pct, edhrec_updated_at)
+    VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    ON CONFLICT(oracle_id) DO UPDATE SET
+      edhrec_inclusion_pct = excluded.edhrec_inclusion_pct,
+      edhrec_updated_at    = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+  `);
+  db.transaction((items) => { for (const e of items) stmt.run(e.oracleId, e.pct); })(entries);
+}
+
 module.exports = {
+  EDHREC_STALE_MS,
+  getCachedEdhrec,
+  upsertEdhrecBatch,
   initCards,
   getMetadata,
   getCardCount,
   getTokenCount,
-  clearAll,
-  insertCard,
-  insertToken,
-  insertCardImage,
-  insertTokenImage,
-  updateCardSets,
-  updateMetadata,
-  rebuildFts,
   searchCards,
   getCard,
   getCardImages,
   getCardsBatch,
+  getCardsByNames,
+  getRoleTags,
+  searchByRole,
+  getCardMetadata,
+  upsertCardMetadata,
 };

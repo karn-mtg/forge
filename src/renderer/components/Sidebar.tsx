@@ -5,6 +5,7 @@ import { FolderTree } from './FolderTree';
 import { NewDeckModal } from './NewDeckModal';
 import { NewFolderModal } from './NewFolderModal';
 import { useGlobalSearchStore } from '../store/useGlobalSearchStore';
+import { useAIStore } from '../store/useAIStore';
 
 const BROWSE_ITEMS = [
   { to: '/recents',    icon: 'schedule',    label: 'Recents'    },
@@ -21,6 +22,7 @@ export function Sidebar() {
   const [newDeckFolderId, setNewDeckFolderId] = useState<number | null | undefined>(undefined);
   const [newFolderParentId, setNewFolderParentId] = useState<number | null | undefined>(undefined);
   const { open: openGlobalSearch } = useGlobalSearchStore();
+  const { toggle: toggleAI, isOpen: aiOpen } = useAIStore();
 
   const openNewDeck = (folderId: number | null) => setNewDeckFolderId(folderId);
   const openNewFolder = (parentId: number | null) => setNewFolderParentId(parentId);
@@ -97,6 +99,27 @@ export function Sidebar() {
                 <span>{label}</span>
               </NavLink>
             ))}
+
+
+            {/* Karn AI */}
+            <div className="pt-4 pb-1">
+              <button
+                onClick={toggleAI}
+                className="w-full flex items-center px-3 py-2 rounded-md transition-all text-body-md"
+                style={aiOpen
+                  ? { background: 'rgba(242,202,131,0.15)', color: '#f2ca83' }
+                  : { color: 'rgba(242,202,131,0.6)' }
+                }
+              >
+                <span
+                  className="material-symbols-outlined mr-2 text-[18px]"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  auto_awesome
+                </span>
+                <span>Karn AI</span>
+              </button>
+            </div>
           </nav>
         </div>
       </aside>

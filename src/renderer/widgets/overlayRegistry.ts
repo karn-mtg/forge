@@ -14,6 +14,8 @@ export interface OverlayCardData {
   edhrecRank?: number;
   /** EDHREC % inclusion fetched async from edhrec.com. null = fetch in progress / failed. */
   edhrecPct?: number | null;
+  /** Collection status for this card in its deck context. */
+  collectionStatus?: string;
 }
 
 export type OverlayAnchor = 'tl' | 'tr' | 'bl' | 'br' | 'bc' | 'tc';
