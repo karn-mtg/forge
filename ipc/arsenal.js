@@ -12,7 +12,7 @@ const { createModuleLogger } = require('../utils/logger');
 const log = createModuleLogger('ipc:arsenal');
 
 // ── CONFIGURE THIS ─────────────────────────────────────────────────────────────
-const ARSENAL_GITHUB_REPO = 'YOUR_GITHUB_USERNAME/karn'; // e.g. 'jdoe/karn'
+const ARSENAL_GITHUB_REPO = 'karn-mtg/karn';
 // ───────────────────────────────────────────────────────────────────────────────
 
 const UPDATE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -43,7 +43,7 @@ class ArsenalManager {
 
   /**
    * Returns the full path to a karn-arsenal executable, or null if not found.
-   * @param {'karn-rules'|'karn-cards'} name
+   * @param {'karn'} name
    */
   getExecutable(name) {
     const exeName = process.platform === 'win32' ? `${name}.exe` : name;
@@ -187,12 +187,10 @@ class ArsenalManager {
     fs.writeFileSync(path.join(this.arsenalDir, 'version.txt'), version, 'utf8');
 
     if (process.platform !== 'win32') {
-      ['karn-rules', 'karn-cards'].forEach(name => {
-        const exe = path.join(this.arsenalDir, name);
-        if (fs.existsSync(exe)) {
-          try { fs.chmodSync(exe, 0o755); } catch { /* ignore */ }
-        }
-      });
+      const exe = path.join(this.arsenalDir, 'karn');
+      if (fs.existsSync(exe)) {
+        try { fs.chmodSync(exe, 0o755); } catch { /* ignore */ }
+      }
     }
 
     try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
@@ -273,7 +271,10 @@ class ArsenalManager {
   async _extractZip(zipPath, destDir) {
     return new Promise((resolve, reject) => {
       if (process.platform === 'win32') {
-        const cmd = `powershell -NoProfile -Command "Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${destDir}'"`;
+        // Escape single quotes for PowerShell single-quoted strings ('' = literal ')
+        const psZip  = zipPath.replace(/'/g, "''");
+        const psDest = destDir.replace(/'/g, "''");
+        const cmd = `powershell -NoProfile -Command "Expand-Archive -Force -Path '${psZip}' -DestinationPath '${psDest}'"`;
         exec(cmd, (err) => { if (err) return reject(err); resolve(); });
       } else {
         exec(`unzip -o "${zipPath}" -d "${destDir}"`, (err) => { if (err) return reject(err); resolve(); });
@@ -300,15 +301,12 @@ class ArsenalManager {
 
   /** Returns current status snapshot. */
   getStatus() {
-    const rulesExe = this.getExecutable('karn-rules');
-    const cardsExe = this.getExecutable('karn-cards');
+    const exe = this.getExecutable('karn');
     const status = {
-      installed: !!(rulesExe || cardsExe),
-      version:          this.getInstalledVersion(),
-      cardsDbVersion:   this.getInstalledDbVersion('cards'),
-      rulesDbVersion:   this.getInstalledDbVersion('rules'),
-      rulesInstalled:   !!rulesExe,
-      cardsInstalled:   !!cardsExe,
+      installed:      !!exe,
+      version:        this.getInstalledVersion(),
+      cardsDbVersion: this.getInstalledDbVersion('cards'),
+      rulesDbVersion: this.getInstalledDbVersion('rules'),
     };
     log.debug('arsenal:getStatus', status);
     return status;

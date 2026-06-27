@@ -50,3 +50,6 @@ build/
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Auto-generated at startup by writeClaudeMcpSettings() with machine-specific absolute paths
+.claude/settings.json

@@ -4,7 +4,8 @@ const https = require('https');
 const {
   getMetadata, getCardCount, getTokenCount,
   searchCards, getCard, getCardImages, getCardsBatch,
-  getCardsByNames, getRoleTags, searchByRole,
+  getCardsByNames, getCardsByNamesLight, getRoleTags, searchByRole,
+  getCachedEdhrec, upsertEdhrecBatch, EDHREC_STALE_MS,
 } = require('../db/cards');
 const { createModuleLogger } = require('../utils/logger');
 
@@ -260,7 +261,8 @@ function registerCardsHandlers(ipcMain, getDb, getWindow) {
     return result;
   });
 
-  ipcMain.handle('cards:getCardsByNames',     (_, args) => { const db = getDb(); return db ? getCardsByNames(db, args) : []; });
+  ipcMain.handle('cards:getCardsByNames',      (_, args) => { const db = getDb(); return db ? getCardsByNames(db, args) : []; });
+  ipcMain.handle('cards:getCardsByNamesLight', (_, args) => { const db = getDb(); return db ? getCardsByNamesLight(db, args) : []; });
   ipcMain.handle('cards:getRoleTags',         (_, args) => { const db = getDb(); return db ? getRoleTags(db, args) : {}; });
   ipcMain.handle('cards:searchByRole', (_, args) => {
     const db = getDb();
@@ -270,7 +272,34 @@ function registerCardsHandlers(ipcMain, getDb, getWindow) {
     return result;
   });
 
-  ipcMain.handle('cards:fetchEdhrecData',     (_, { cardName }) => fetchEdhrecInclusion(cardName));
+  ipcMain.handle('cards:fetchEdhrecData', async (_, { cardName }) => {
+    // L1: in-memory cache (keyed by name, survives within session)
+    const memCached = edhrecCache.get(cardName);
+    if (memCached && (Date.now() - memCached.fetchedAt) < EDHREC_CACHE_TTL_MS) {
+      return { pct: memCached.pct };
+    }
+    // L2: SQLite persistent cache (keyed by oracle_id, survives restarts)
+    const db = getDb();
+    let oracleId = null;
+    if (db) {
+      const cardRow = db.prepare('SELECT oracle_id FROM cards WHERE name = ? LIMIT 1').get(cardName);
+      oracleId = cardRow?.oracle_id ?? null;
+      if (oracleId) {
+        const sqlCache = getCachedEdhrec(db, [oracleId]);
+        const entry = sqlCache[oracleId];
+        if (entry && (Date.now() - new Date(entry.updatedAt).getTime()) < EDHREC_STALE_MS) {
+          edhrecCache.set(cardName, { pct: entry.pct, fetchedAt: Date.now() });
+          return { pct: entry.pct };
+        }
+      }
+    }
+    // Cache miss — fetch from EDHREC and persist to both layers
+    const result = await fetchEdhrecInclusion(cardName);
+    if (db && oracleId) {
+      upsertEdhrecBatch(db, [{ oracleId, pct: result.pct }]);
+    }
+    return result;
+  });
   ipcMain.handle('cards:fetchEdhrecCommander', (_, { commanderName }) => {
     log.info(`cards:fetchEdhrecCommander: ${commanderName}`);
     return fetchEdhrecCommander(commanderName);

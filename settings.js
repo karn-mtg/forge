@@ -14,8 +14,15 @@ function getSafeStorage() {
   return _safeStorage;
 }
 
+// In-memory settings cache — avoids repeated disk reads and OS keychain decryption per IPC call
+let _settingsCache = null;
+
 const DEFAULTS = {
   defaultFormat: 'commander',
+  ai: {
+    provider:  'claude-cli',
+    modelName: '',
+  },
 };
 
 function getSettingsPath(userDir) {
@@ -24,6 +31,7 @@ function getSettingsPath(userDir) {
 }
 
 function getSettings(userDir) {
+  if (_settingsCache) return _settingsCache;
   try {
     const raw = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(getSettingsPath(userDir), 'utf8')) };
     // Decrypt API key before returning to callers
@@ -39,6 +47,7 @@ function getSettings(userDir) {
     }
     const keys = Object.keys(raw).filter(k => k !== 'ai');
     log.debug('getSettings', { keys });
+    _settingsCache = raw;
     return raw;
   } catch {
     log.debug('getSettings — no settings file, returning defaults');
@@ -50,7 +59,9 @@ function setSettings(userDir, updates) {
   const updateKeys = Object.keys(updates).filter(k => k !== 'ai');
   log.debug('setSettings', { keys: updateKeys });
 
+  _settingsCache = null; // invalidate so getSettings re-reads from disk below
   const current = getSettings(userDir);
+  _settingsCache = null; // clear before the write so we can set the final merged value
   // Re-read raw (with encrypted key intact) so we don't overwrite with decrypted version
   let rawCurrent = {};
   try { rawCurrent = JSON.parse(fs.readFileSync(getSettingsPath(userDir), 'utf8')); } catch {}
@@ -67,7 +78,9 @@ function setSettings(userDir, updates) {
 
   fs.writeFileSync(getSettingsPath(userDir), JSON.stringify(next, null, 2));
   log.info('Settings saved');
-  return { ...current, ...updates };
+  const merged = { ...current, ...updates };
+  _settingsCache = merged;
+  return merged;
 }
 
 module.exports = { getSettings, setSettings };

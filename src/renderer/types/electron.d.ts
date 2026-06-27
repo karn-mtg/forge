@@ -138,9 +138,10 @@ declare global {
   interface Window {
     aiAPI: {
       checkClaude(): Promise<{ installed: boolean; version: string | null; loggedIn: boolean; method: string | null; expired?: boolean }>;
-      chat(text: string): Promise<void>;
-      abort(): Promise<void>;
-      clearSession(): Promise<void>;
+      chat(text: string, context?: string, sessionHandle?: string): Promise<void>;
+      abort(): Promise<{ ok: boolean }>;
+      clearSession(): Promise<{ ok: boolean }>;
+      resetProvider(): Promise<{ ok: boolean }>;
       getMemory(): Promise<AgentMemory[]>;
       upsertMemory(args: { key: string; value: string }): Promise<void>;
       deleteMemory(args: { key: string }): Promise<void>;
@@ -148,6 +149,20 @@ declare global {
       onDone(cb: (data: { sessionId: string | null }) => void): void;
       onError(cb: (msg: string) => void): void;
       removeListeners(): void;
+      // Conversation persistence
+      createConversation(args: { deckId?: number | null; title?: string | null }): Promise<{ id: number }>;
+      getConversations(args?: { deckId?: number }): Promise<import('../store/useAIStore').ConversationSummary[]>;
+      getConversation(args: { id: number }): Promise<{ id: number; title: string | null; deck_id: number | null; session_handle: string | null; messages: Array<{ role: string; content: string; ui_blocks: unknown[] | null }> } | null>;
+      deleteConversation(args: { id: number }): Promise<{ ok: boolean }>;
+      appendMessage(args: { conversationId: number; role: string; content: string; uiBlocks?: unknown[] | null }): Promise<{ id: number }>;
+      updateConversationHandle(args: { id: number; sessionHandle: string }): Promise<{ ok: boolean }>;
+      addDeclinedOracleId(args: { conversationId: number; oracleId: string }): Promise<{ ok: boolean }>;
+      // Chat controller block events
+      onBlock(cb: (event: import('../../shared/chat-events').ChatEvent) => void): void;
+      onAsk(cb: (event: import('../../shared/chat-events').ChatEvent) => void): void;
+      respondToAsk(requestId: string, value: unknown): void;
+      removeBlockListeners(): void;
+      // Card query
       cardQuery(prompt: string): Promise<void>;
       cardQueryAbort(): Promise<{ ok: boolean }>;
       onCardQueryToken(cb: (delta: string) => void): void;
@@ -232,8 +247,6 @@ declare global {
         version: string | null;
         cardsDbVersion: string | null;
         rulesDbVersion: string | null;
-        rulesInstalled: boolean;
-        cardsInstalled: boolean;
       }>;
       checkForUpdates(): Promise<{ current: string | null; latest: string | null; hasUpdate: boolean }>;
       checkForDbUpdates(component: 'cards' | 'rules'): Promise<{ current: string | null; latest: string | null; hasUpdate: boolean }>;
@@ -282,6 +295,7 @@ declare global {
       getCardImages(args: { oracleId: string }): Promise<CardImage[]>;
       getCardsBatch(args: { oracleIds: string[] }): Promise<Card[]>;
       getCardsByNames(args: { names: string[] }): Promise<Card[]>;
+      getCardsByNamesLight(args: { names: string[] }): Promise<{ oracle_id: string; name: string }[]>;
       getRoleTags(args: { oracleIds: string[] }): Promise<Record<string, string[]>>;
       searchByRole(args: { roles: string[]; pageSize?: number }): Promise<{ cards: Card[] }>;
       /** Fetch EDHREC generic inclusion % for a card name. Cached 24 h. */

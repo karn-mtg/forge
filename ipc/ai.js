@@ -1,172 +1,98 @@
 'use strict';
 
-const { spawn, execFile } = require('child_process');
-const fs   = require('fs');
-const path = require('path');
-const os   = require('os');
-const lib  = require('../db/library');
+const { spawn }  = require('child_process');
+const path       = require('path');
+const providerRegistry = require('./providers/index');
+const { checkClaude }  = require('./providers/claude-cli');
+const lib              = require('../db/library');
 const { createModuleLogger } = require('../utils/logger');
 
 const log = createModuleLogger('ipc:ai');
 const PROJECT_ROOT = path.join(__dirname, '..');
 
-let currentSessionId = null;
-let currentProc = null;
+// card query subprocess is still stateless and claude-specific
 let cardQueryProc = null;
 
 module.exports = { registerAIHandlers };
 
-function checkInstalled() {
-  return new Promise((resolve) => {
-    execFile('claude', ['--version'], { shell: true, timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        log.warn('Claude CLI not found in PATH');
-        resolve({ installed: false, version: null });
-      } else {
-        const version = stdout.trim().split('\n')[0] || 'unknown';
-        log.info(`Claude CLI found: ${version}`);
-        resolve({ installed: true, version });
-      }
-    });
-  });
-}
+function registerAIHandlers(ipcMain, getLibDb, getSettings) {
 
-function checkLoggedIn() {
-  // Check env var auth first (API key or OAuth token)
-  if (process.env.ANTHROPIC_API_KEY)        return { loggedIn: true, method: 'api_key' };
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN)  return { loggedIn: true, method: 'env_token' };
+  // ── Main chat ──────────────────────────────────────────────────────────────
 
-  // Check OAuth credentials file written by `claude login`
-  const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
-  try {
-    const creds = JSON.parse(fs.readFileSync(credPath, 'utf8'));
-    const oauth = creds?.claudeAiOauth;
-    if (oauth?.accessToken) {
-      const expired = oauth.expiresAt && Date.now() > new Date(oauth.expiresAt).getTime();
-      return { loggedIn: true, method: 'oauth', expired: !!expired };
-    }
-  } catch { /* file missing or malformed */ }
+  ipcMain.handle('ai:chat', (event, { text, context, sessionHandle }) => {
+    return new Promise(async (resolve, reject) => {
+      const provider = providerRegistry.getProvider(getSettings());
+      provider.abort(); // kill any in-flight request
 
-  return { loggedIn: false, method: null };
-}
+      log.info(`ai:chat via provider=${provider.id}`);
 
-function registerAIHandlers(ipcMain, getLibDb) {
-  ipcMain.handle('ai:chat', (event, { text }) => {
-    return new Promise((resolve, reject) => {
-      if (currentProc) {
-        log.warn('ai:chat — killing existing process before new chat');
-        currentProc.kill();
-        currentProc = null;
-      }
-
-      const args = ['-p', text, '--output-format', 'stream-json', '--verbose'];
-      const isResume = !!currentSessionId;
-      if (currentSessionId) args.push('--resume', currentSessionId);
-
-      log.info(`ai:chat ${isResume ? 'resume session=' + currentSessionId : 'new session'} prompt="${text.slice(0, 80)}${text.length > 80 ? '…' : ''}"`);
-
-      // shell:true lets Windows find claude.cmd via PATH
-      // cwd ensures Claude picks up .claude/settings.json and resolves MCP servers
-      currentProc = spawn('claude', args, {
-        shell: true,
-        cwd: PROJECT_ROOT,
-        env: { ...process.env },
-      });
-
-      let buffer = '';
-      let previousText = '';
-      let tokenCount = 0;
-
-      currentProc.stdout.on('data', (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop(); // keep incomplete last line
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const evt = JSON.parse(line);
-            if (evt.type === 'assistant') {
-              const blocks = evt.message?.content ?? [];
-              const textBlock = blocks.find(b => b.type === 'text');
-              if (textBlock) {
-                const fullText = textBlock.text ?? '';
-                if (fullText.length > previousText.length) {
-                  const delta = fullText.slice(previousText.length);
-                  event.sender.send('ai:token', delta);
-                  previousText = fullText;
-                  tokenCount += delta.length;
-                }
-              }
-            }
-            if (evt.type === 'result') {
-              if (evt.session_id) currentSessionId = evt.session_id;
-              log.info(`ai:chat done sessionId=${evt.session_id ?? 'none'} chars=${tokenCount}`);
-              event.sender.send('ai:done', { sessionId: evt.session_id ?? null });
-              currentProc = null;
-              resolve();
-            }
-          } catch {
-            // skip malformed lines
+      try {
+        for await (const chunk of provider.chat({ message: text, context, sessionHandle, history: [] })) {
+          if (chunk.kind === 'token') {
+            event.sender.send('ai:token', chunk.delta);
+          } else if (chunk.kind === 'done') {
+            event.sender.send('ai:done', { sessionId: chunk.sessionHandle ?? null });
+            resolve();
+          } else if (chunk.kind === 'error') {
+            event.sender.send('ai:error', chunk.message);
           }
         }
-      });
-
-      currentProc.stderr.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) {
-          log.warn(`ai:chat stderr: ${msg}`);
-          event.sender.send('ai:error', msg);
-        }
-      });
-
-      currentProc.on('error', (e) => {
-        const msg = e.code === 'ENOENT'
-          ? 'Claude Code not found. Make sure it is installed and in PATH.'
-          : `Failed to start Claude: ${e.message}`;
-        log.error(`ai:chat process error: ${msg}`);
-        event.sender.send('ai:error', msg);
-        currentProc = null;
+        resolve();
+      } catch (e) {
+        log.error(`ai:chat error: ${e.message}`);
+        event.sender.send('ai:error', e.message);
         reject(e);
-      });
-
-      currentProc.on('close', (code) => {
-        currentProc = null;
-        if (code !== 0 && code !== null) {
-          log.warn(`ai:chat process exited with code ${code}`);
-          // process exited without a result event
-          event.sender.send('ai:error', `Claude exited with code ${code}`);
-          resolve(); // resolve so the IPC call doesn't hang
-        }
-      });
+      }
     });
   });
 
   ipcMain.handle('ai:abort', () => {
-    if (currentProc) {
-      log.info('ai:abort — killing chat process');
-      currentProc.kill();
-      currentProc = null;
-    }
+    log.info('ai:abort');
+    const provider = providerRegistry.getProvider(getSettings());
+    provider.abort();
     return { ok: true };
   });
 
   ipcMain.handle('ai:clearSession', () => {
-    log.info(`ai:clearSession — was ${currentSessionId ?? 'null'}`);
-    currentSessionId = null;
+    log.info('ai:clearSession');
+    // Session handle is now managed by the caller (useAIStore) — nothing to do here.
+    return { ok: true };
+  });
+
+  ipcMain.handle('ai:resetProvider', () => {
+    log.info('ai:resetProvider');
+    providerRegistry.resetProvider();
     return { ok: true };
   });
 
   ipcMain.handle('ai:checkClaude', async () => {
     log.debug('ai:checkClaude');
-    const [installResult, authResult] = await Promise.all([checkInstalled(), Promise.resolve(checkLoggedIn())]);
-    log.info(`ai:checkClaude → installed=${installResult.installed} loggedIn=${authResult.loggedIn} method=${authResult.method ?? 'none'}`);
-    return { ...installResult, ...authResult };
+    const result = await checkClaude();
+    log.info(`ai:checkClaude → installed=${result.installed} loggedIn=${result.loggedIn} method=${result.method ?? 'none'}`);
+    return result;
   });
 
-  ipcMain.handle('ai:getMemory', () => lib.getAgentMemories(getLibDb()));
+  // ── Agent memory ───────────────────────────────────────────────────────────
+
+  ipcMain.handle('ai:getMemory',    ()       => lib.getAgentMemories(getLibDb()));
   ipcMain.handle('ai:upsertMemory', (_, args) => lib.upsertAgentMemory(getLibDb(), args));
   ipcMain.handle('ai:deleteMemory', (_, args) => lib.deleteAgentMemory(getLibDb(), args));
+
+  // ── Conversation persistence ───────────────────────────────────────────────
+
+  ipcMain.handle('ai:createConversation',       (_, args) => lib.createAIConversation(getLibDb(), args));
+  ipcMain.handle('ai:getConversations',         (_, args) => lib.getAIConversations(getLibDb(), args ?? {}));
+  ipcMain.handle('ai:getConversation',          (_, args) => lib.getAIConversation(getLibDb(), args));
+  ipcMain.handle('ai:deleteConversation',       (_, args) => lib.deleteAIConversation(getLibDb(), args));
+  ipcMain.handle('ai:appendMessage',            (_, args) => lib.appendAIMessage(getLibDb(), args));
+  ipcMain.handle('ai:updateConversationHandle', (_, { id, sessionHandle }) => {
+    const db = getLibDb();
+    db.prepare('UPDATE ai_conversations SET session_handle = ? WHERE id = ?').run(sessionHandle, id);
+    return { ok: true };
+  });
+  ipcMain.handle('ai:addDeclinedOracleId', (_, args) => lib.addDeclinedOracleId(getLibDb(), args));
+
+  // ── Card query (stateless Claude CLI subprocess) ───────────────────────────
 
   ipcMain.handle('ai:cardQuery', (event, { prompt }) => {
     return new Promise((resolve) => {
@@ -179,7 +105,7 @@ function registerAIHandlers(ipcMain, getLibDb) {
       log.info(`ai:cardQuery prompt="${prompt.slice(0, 80)}${prompt.length > 80 ? '…' : ''}"`);
 
       const systemInstruction = [
-        'You are a Magic: The Gathering card search assistant with access to the search_cards MCP tool.',
+        'You are a Magic: The Gathering card search assistant. Use the search_cards tool from the karn MCP server for semantic and graph-based card search.',
         'Use search_cards to find cards matching the user\'s request. You may call it multiple times.',
         'After your brief explanation, end your ENTIRE response with this exact tag on its own line:',
         '<cards>["oracle-id-1","oracle-id-2"]</cards>',
@@ -206,8 +132,7 @@ function registerAIHandlers(ipcMain, getLibDb) {
           try {
             const evt = JSON.parse(line);
             if (evt.type === 'assistant') {
-              const blocks = evt.message?.content ?? [];
-              const textBlock = blocks.find(b => b.type === 'text');
+              const textBlock = (evt.message?.content ?? []).find(b => b.type === 'text');
               if (textBlock) {
                 const fullRaw = textBlock.text ?? '';
                 if (fullRaw.length > rawAccumulated.length) {
@@ -268,7 +193,7 @@ function registerAIHandlers(ipcMain, getLibDb) {
 
   ipcMain.handle('ai:cardQueryAbort', () => {
     if (cardQueryProc) {
-      log.info('ai:cardQueryAbort — killing card query process');
+      log.info('ai:cardQueryAbort');
       cardQueryProc.kill();
       cardQueryProc = null;
     }

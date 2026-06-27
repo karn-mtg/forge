@@ -88,11 +88,15 @@ CREATE TABLE IF NOT EXISTS arrangements (
 );
 
 -- Fix #6: indexes missing from original schema
-CREATE INDEX IF NOT EXISTS idx_deck_cards_deck_id    ON deck_cards (deck_id);
-CREATE INDEX IF NOT EXISTS idx_arrangements_deck_id  ON arrangements (deck_id);
-CREATE INDEX IF NOT EXISTS idx_collection_oracle_id  ON collection (oracle_id);
-CREATE INDEX IF NOT EXISTS idx_wishlist_oracle_id    ON wishlist (oracle_id);
-CREATE INDEX IF NOT EXISTS idx_activity_log_deck_id  ON activity_log (deck_id);
+CREATE INDEX IF NOT EXISTS idx_deck_cards_deck_id          ON deck_cards (deck_id);
+CREATE INDEX IF NOT EXISTS idx_arrangements_deck_id        ON arrangements (deck_id);
+CREATE INDEX IF NOT EXISTS idx_collection_oracle_id        ON collection (oracle_id);
+CREATE INDEX IF NOT EXISTS idx_wishlist_oracle_id          ON wishlist (oracle_id);
+CREATE INDEX IF NOT EXISTS idx_activity_log_deck_id        ON activity_log (deck_id);
+CREATE INDEX IF NOT EXISTS idx_collection_added_at         ON collection (added_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wishlist_sort               ON wishlist (priority DESC, added_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collection_owner_oracle     ON collection (oracle_id, recipient_id, scryfall_id);
+CREATE INDEX IF NOT EXISTS idx_activity_created_at         ON activity_log (created_at);
 
 CREATE TABLE IF NOT EXISTS recipients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,6 +146,7 @@ function initLibrary(userDir) {
   try { db.exec('ALTER TABLE deck_cards ADD COLUMN is_proxy INTEGER NOT NULL DEFAULT 0'); } catch {}
   try { db.exec('ALTER TABLE collection ADD COLUMN recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL'); } catch {}
   try { db.exec('ALTER TABLE ai_conversations ADD COLUMN declined_oracle_ids TEXT'); } catch {}
+  try { db.exec('ALTER TABLE ai_conversations ADD COLUMN session_handle TEXT'); } catch {}
   return db;
 }
 
@@ -279,22 +284,19 @@ function addCardToDeck(db, { deckId, oracleId, scryfallId = null, quantity = 1, 
 }
 
 function removeCardFromDeck(db, { id }) {
-  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
-  db.prepare('DELETE FROM deck_cards WHERE id = ?').run(id);
+  const row = db.prepare('DELETE FROM deck_cards WHERE id = ? RETURNING deck_id').get(id);
   if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
 }
 
 function updateCardBoard(db, { id, board }) {
-  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
-  db.prepare('UPDATE deck_cards SET board = ? WHERE id = ?').run(board, id);
+  const row = db.prepare('UPDATE deck_cards SET board = ? WHERE id = ? RETURNING deck_id').get(board, id);
   if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
 }
 
 function updateCardQuantity(db, { id, quantity }) {
-  const row = db.prepare('SELECT deck_id FROM deck_cards WHERE id = ?').get(id);
-  db.prepare('UPDATE deck_cards SET quantity = ? WHERE id = ?').run(quantity, id);
+  const row = db.prepare('UPDATE deck_cards SET quantity = ? WHERE id = ? RETURNING deck_id').get(quantity, id);
   if (row) db.prepare("UPDATE decks SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?").run(row.deck_id);
   return { ok: true };
 }
@@ -381,24 +383,21 @@ function updateCollectionEntry(db, { id, quantity, condition, foil, acquiredPric
 }
 
 function getDeckCardStatuses(db, { deckId }) {
+  // Single LEFT JOIN with conditional aggregation replaces three correlated subqueries per row
   const rows = db.prepare(`
     SELECT
       dc.oracle_id,
       dc.scryfall_id AS deck_scryfall,
       dc.is_proxy,
       d.recipient_id,
-      COALESCE((SELECT SUM(c.quantity) FROM collection c
-        WHERE c.oracle_id = dc.oracle_id
-          AND c.recipient_id = d.recipient_id
-          AND c.scryfall_id = dc.scryfall_id), 0) AS in_recipient_same,
-      COALESCE((SELECT SUM(c.quantity) FROM collection c
-        WHERE c.oracle_id = dc.oracle_id
-          AND c.recipient_id = d.recipient_id), 0) AS in_recipient_any,
-      COALESCE((SELECT SUM(c.quantity) FROM collection c
-        WHERE c.oracle_id = dc.oracle_id), 0) AS in_collection_any
+      COALESCE(SUM(CASE WHEN c.recipient_id = d.recipient_id AND c.scryfall_id = dc.scryfall_id THEN c.quantity ELSE 0 END), 0) AS in_recipient_same,
+      COALESCE(SUM(CASE WHEN c.recipient_id = d.recipient_id THEN c.quantity ELSE 0 END), 0) AS in_recipient_any,
+      COALESCE(SUM(c.quantity), 0) AS in_collection_any
     FROM deck_cards dc
     JOIN decks d ON d.id = dc.deck_id
+    LEFT JOIN collection c ON c.oracle_id = dc.oracle_id
     WHERE dc.deck_id = ?
+    GROUP BY dc.oracle_id, dc.scryfall_id, dc.is_proxy, d.recipient_id
   `).all(deckId);
 
   const result = {};
@@ -702,4 +701,10 @@ module.exports = {
   getAgentMemories,
   upsertAgentMemory,
   deleteAgentMemory,
+  updateCardPrint,
 };
+
+function updateCardPrint(db, { id, scryfallId }) {
+  db.prepare('UPDATE deck_cards SET scryfall_id = ? WHERE id = ?').run(scryfallId, id);
+  return { ok: true };
+}

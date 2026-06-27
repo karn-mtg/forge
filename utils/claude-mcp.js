@@ -8,14 +8,14 @@ const path = require('path');
  * Called once at app startup so Claude always finds the right executables.
  *
  * Three servers are registered:
- *   karnforge  — this app's own MCP server (library, card search via SQLite)
- *   karn-cards — arsenal semantic card search (if installed)
- *   karn-rules — arsenal rules MCP (if installed)
+ *   karnforge       — library, card search via SQLite (this app's own MCP)
+ *   chat-controller — UI event bridge (emits blocks/asks back to the renderer)
+ *   karn            — arsenal: semantic card search + rules (if installed)
  *
  * Claude spawns these on-demand via stdio transport; Electron does not manage
  * their lifecycle.
  */
-function writeClaudeMcpSettings(arsenal) {
+function writeClaudeMcpSettings(arsenal, { chatBridgePort } = {}) {
   const settingsPath = path.join(__dirname, '..', '.claude', 'settings.json');
 
   let existing = {};
@@ -28,8 +28,6 @@ function writeClaudeMcpSettings(arsenal) {
 
   // karnforge MCP server — uses the same Electron binary so better-sqlite3
   // bindings match the runtime the app was built against.
-  // cwd and absolute tsx path ensure Claude can resolve everything regardless
-  // of where it spawns the process from.
   mcpServers.karnforge = {
     command: process.execPath,
     args: ['-r', tsxCjs, path.join(projectRoot, 'mcp', 'index.js')],
@@ -37,20 +35,24 @@ function writeClaudeMcpSettings(arsenal) {
     cwd: projectRoot,
   };
 
-  // arsenal servers — only register if the executables are present
-  const cardsExe = arsenal.getExecutable('karn-cards');
-  if (cardsExe) {
-    mcpServers['karn-cards'] = {
-      command: cardsExe,
-      env: { KARN_DATA_DIR: arsenal.dataDir },
-      cwd: arsenal.arsenalDir,
+  // chat-controller MCP — pushes typed UI events to the renderer via HTTP bridge
+  if (chatBridgePort) {
+    mcpServers['chat-controller'] = {
+      command: process.execPath,
+      args: ['-r', tsxCjs, path.join(projectRoot, 'mcp', 'chat-controller', 'index.js')],
+      env: {
+        ELECTRON_RUN_AS_NODE:  '1',
+        KARNFORGE_BRIDGE_PORT: String(chatBridgePort),
+      },
+      cwd: projectRoot,
     };
   }
 
-  const rulesExe = arsenal.getExecutable('karn-rules');
-  if (rulesExe) {
-    mcpServers['karn-rules'] = {
-      command: rulesExe,
+  // arsenal server — only register if the executable is present
+  const karnExe = arsenal.getExecutable('karn');
+  if (karnExe) {
+    mcpServers['karn'] = {
+      command: karnExe,
       env: { KARN_DATA_DIR: arsenal.dataDir },
       cwd: arsenal.arsenalDir,
     };

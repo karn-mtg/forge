@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react';
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { marked } from 'marked';
 import { Sidebar } from '../components/Sidebar';
@@ -32,16 +32,14 @@ const FORMAT_LABELS: Record<string, string> = {
   pioneer: 'Pioneer', legacy: 'Legacy', vintage: 'Vintage', pauper: 'Pauper',
 };
 
-const GROUP_PRESETS = [
-  { name: 'Creatures',     color: '#f2ca83' },
-  { name: 'Spells',        color: '#bcd0ff' },
-  { name: 'Enchantments',  color: '#86efac' },
-  { name: 'Artifacts',     color: '#c4c6cd' },
-  { name: 'Lands',         color: '#d4aa7d' },
-  { name: 'Planeswalkers', color: '#c084fc' },
-];
 
 const CATEGORY_ORDER = ['Commanders','Creatures','Instants','Sorceries','Enchantments','Artifacts','Planeswalkers','Lands','Other','Sideboard'];
+
+const BASIC_LAND_NAMES = new Set([
+  'Plains', 'Island', 'Swamp', 'Mountain', 'Forest', 'Wastes',
+  'Snow-Covered Plains', 'Snow-Covered Island', 'Snow-Covered Swamp',
+  'Snow-Covered Mountain', 'Snow-Covered Forest',
+]);
 
 function QtyInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   const [editing, setEditing] = useState(false);
@@ -106,6 +104,18 @@ function getImageUrl(card: Card): string {
   return '';
 }
 
+interface PreSelectConflict {
+  groupEl: HTMLDivElement;
+  groupName: string;
+  groupColor: string;
+  cards: { el: HTMLDivElement; oracleId: string; name: string; artUrl: string }[];
+}
+interface PreSelectConfirmData {
+  newGroupEl: HTMLDivElement;
+  freeCards: HTMLDivElement[];
+  conflicts: PreSelectConflict[];
+}
+
 /** Raw canvas-group shape — oracle IDs resolved from DOM, qty from deckCards. */
 interface RawCanvasGroup {
   name: string;
@@ -121,9 +131,10 @@ function readCanvasGroups(cv: HTMLDivElement): RawCanvasGroup[] {
   const out: RawCanvasGroup[] = [];
   cv.querySelectorAll<HTMLDivElement>(':scope > .group-container').forEach(g => {
     const oracleIds: string[] = [];
+    const seen = new Set<string>();
     g.querySelectorAll<HTMLElement>('[data-oracle-id]').forEach(el => {
       const oid = el.dataset.oracleId;
-      if (oid && !oracleIds.includes(oid)) oracleIds.push(oid);
+      if (oid && !seen.has(oid)) { seen.add(oid); oracleIds.push(oid); }
     });
     if (oracleIds.length > 0) {
       out.push({
@@ -622,7 +633,7 @@ function ToolbarTooltip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-type Tab = 'workshop' | 'list' | 'missing' | 'simulate' | 'combos';
+type Tab = 'workshop' | 'list' | 'missing' | 'combos';
 
 export function DeckView() {
   const { id } = useParams<{ id: string }>();
@@ -650,8 +661,20 @@ export function DeckView() {
 
   // Group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
-  const [groupName, setGroupName] = useState('Creatures');
-  const [groupColorIdx, setGroupColorIdx] = useState(0);
+  const [groupName, setGroupName] = useState('');
+  const [groupColor, setGroupColor] = useState('#f2ca83');
+  const [groupPreSelect, setGroupPreSelect] = useState<'none' | 'type' | 'oracle'>('none');
+  const [groupPreSelectTypeTags, setGroupPreSelectTypeTags] = useState<string[]>([]);
+  const [groupPreSelectTypeDraft, setGroupPreSelectTypeDraft] = useState('');
+  const [groupPreSelectTypeOp, setGroupPreSelectTypeOp] = useState<'or' | 'and'>('or');
+  const [groupPreSelectOracleTags, setGroupPreSelectOracleTags] = useState<string[]>([]);
+  const [groupPreSelectOracleDraft, setGroupPreSelectOracleDraft] = useState('');
+  const [groupPreSelectOracleOp, setGroupPreSelectOracleOp] = useState<'or' | 'and'>('or');
+
+  // Group pre-select confirmation
+  const [preSelectConfirm, setPreSelectConfirm] = useState<PreSelectConfirmData | null>(null);
+  const [preSelectConfirmSel, setPreSelectConfirmSel] = useState<Set<HTMLDivElement>>(new Set());
+  const [preSelectConfirmOpen, setPreSelectConfirmOpen] = useState<Set<number>>(new Set());
 
   // Group context menu
   const [groupMenu, setGroupMenu] = useState<{ top: number; left: number; groupEl: HTMLDivElement } | null>(null);
@@ -741,8 +764,10 @@ export function DeckView() {
   const arrangementsCacheRef = useRef<Arrangement[]>([]);
 
   // #23 – Undo / Redo history stacks (canvas JSON snapshots)
-  const undoStackRef = useRef<string[]>([]);
-  const redoStackRef = useRef<string[]>([]);
+  const undoStackRef  = useRef<string[]>([]);
+  const redoStackRef  = useRef<string[]>([]);
+  const undoBytesRef          = useRef(0); // running total — avoids O(N) reduce on every push
+  const decoratorDebounceRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Always-current mirrors of React state for use inside stable callbacks/effects
   const deckCardsRef   = useRef<DeckCardEntry[]>([]);
@@ -767,37 +792,39 @@ export function DeckView() {
       setDeckCards(cards);
       deckCardsRef.current = cards; // sync ref immediately so canvas helpers see fresh data
 
-      // Fetch card details for mana curve + list view
+      // Fetch card details and collection statuses in parallel — they don't depend on each other
       const oracleIds = [...new Set(cards.map(c => c.oracle_id).filter(Boolean))];
-      if (oracleIds.length) {
-        try {
-          const details = await window.cardsAPI.getCardsBatch({ oracleIds });
-          const map: Record<string, Card> = {};
-          details.forEach(c => { map[c.oracle_id] = c; });
-          setCardDetails(map);
-          cardDetailsRef.current = map; // sync ref immediately
+      const [detailsResult, statusesResult] = await Promise.allSettled([
+        oracleIds.length ? window.cardsAPI.getCardsBatch({ oracleIds }) : Promise.resolve([]),
+        window.libraryAPI.getDeckCardStatuses({ deckId }),
+      ]);
 
-          // Patch canvas cards that were placed before card details loaded
-          // (arrangement restored or reconciled while details were still in-flight).
-          if (canvasRef.current) {
-            canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]').forEach(cardEl => {
-              try {
-                const d = JSON.parse(cardEl.dataset.cardJson || '{}');
-                if (!d.imageUrl && d.oracleId) {
-                  const imageUrl = preferredImagesRef.current[d.oracleId] || getImageUrl(map[d.oracleId]);
-                  if (imageUrl) setCardElImage(cardEl, imageUrl);
-                }
-              } catch {}
-            });
-          }
-        } catch {}
+      if (detailsResult.status === 'fulfilled') {
+        const details = detailsResult.value as Card[];
+        const map: Record<string, Card> = {};
+        details.forEach(c => { map[c.oracle_id] = c; });
+        setCardDetails(map);
+        cardDetailsRef.current = map; // sync ref immediately
+
+        // Patch canvas cards that were placed before card details loaded
+        if (canvasRef.current) {
+          canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]').forEach(cardEl => {
+            try {
+              const d = JSON.parse(cardEl.dataset.cardJson || '{}');
+              if (!d.imageUrl && d.oracleId) {
+                const imageUrl = preferredImagesRef.current[d.oracleId] || getImageUrl(map[d.oracleId]);
+                if (imageUrl) setCardElImage(cardEl, imageUrl);
+              }
+            } catch {}
+          });
+        }
       }
-      // Load collection status for every card in this deck
-      try {
-        const statuses = await window.libraryAPI.getDeckCardStatuses({ deckId });
+
+      if (statusesResult.status === 'fulfilled') {
+        const statuses = statusesResult.value as Record<string, string>;
         cardStatusesRef.current = statuses;
         setCardStatuses(statuses);
-      } catch { /* non-critical */ }
+      }
 
       // Race condition fix: if arrangements already loaded before deck data arrived,
       // the earlier reconcileCanvas() saw an empty deckCardsRef and skipped.
@@ -933,12 +960,14 @@ export function DeckView() {
     if (!canvasRef.current) return;
     const snap = JSON.stringify(serializeCanvas());
     undoStackRef.current.push(snap);
+    undoBytesRef.current += snap.length;
     // Trim by entry count
-    if (undoStackRef.current.length > UNDO_MAX_ENTRIES) undoStackRef.current.shift();
-    // Trim by total byte size
-    let totalBytes = undoStackRef.current.reduce((s, e) => s + e.length, 0);
-    while (totalBytes > UNDO_MAX_BYTES && undoStackRef.current.length > 1) {
-      totalBytes -= undoStackRef.current.shift()!.length;
+    if (undoStackRef.current.length > UNDO_MAX_ENTRIES) {
+      undoBytesRef.current -= undoStackRef.current.shift()!.length;
+    }
+    // Trim by total byte size (incrementally tracked — no reduce)
+    while (undoBytesRef.current > UNDO_MAX_BYTES && undoStackRef.current.length > 1) {
+      undoBytesRef.current -= undoStackRef.current.shift()!.length;
     }
     redoStackRef.current = [];
   }, [serializeCanvas]);
@@ -1577,6 +1606,7 @@ export function DeckView() {
       el.querySelector<HTMLButtonElement>('.sticker-close')?.addEventListener('click', () => { el.remove(); scheduleAutoSave(); });
       attachResizeHandlers(el, 'sticker');
     }
+    const restoreWidgetGroups = readCanvasGroups(cv);
     for (const w of state.widgets || []) {
       if (!WidgetRegistry.get(w.defId)) continue;
       const el = makeWidgetEl(w.defId);
@@ -1586,8 +1616,7 @@ export function DeckView() {
       if (w.params) el.dataset.widgetParams = JSON.stringify(w.params);
       cv.appendChild(el);
       makeItemDraggable(el, 'widget');
-      const rawGrps = readCanvasGroups(cv);
-      const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps, cardStatusesRef.current);
+      const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, restoreWidgetGroups, cardStatusesRef.current);
       renderWidgetBody(el, w.defId, data, w.params);
       renderWidgetBodyAsync(el, w.defId, data, w.params);
       applyWidgetDecorators(el);
@@ -2157,7 +2186,7 @@ export function DeckView() {
 
     const onAIApplySwap = async (e: Event) => {
       const { cutOracleId, addOracleId, deckId: swapDeckId } = (e as CustomEvent).detail;
-      const cutEntry = deckCards.find(c => c.oracle_id === cutOracleId);
+      const cutEntry = deckCardsRef.current.find(c => c.oracle_id === cutOracleId);
       if (cutEntry) {
         await window.libraryAPI.removeCardFromDeck({ id: cutEntry.id });
         setDeckCards(prev => prev.filter(c => c.id !== cutEntry.id));
@@ -2171,7 +2200,7 @@ export function DeckView() {
 
     const onAIRemoveCards = (e: Event) => {
       const { oracleIds } = (e as CustomEvent).detail;
-      const entries = deckCards.filter(c => (oracleIds as string[]).includes(c.oracle_id));
+      const entries = deckCardsRef.current.filter(c => (oracleIds as string[]).includes(c.oracle_id));
       removeCardsFromDeckRef.current(entries.map(c => c.id));
     };
 
@@ -2188,7 +2217,7 @@ export function DeckView() {
       window.removeEventListener('ai:apply-swap',         onAIApplySwap  as EventListener);
       window.removeEventListener('ai:remove-cards',       onAIRemoveCards as EventListener);
     };
-  }, [deckCards, deckId, dropIntoGroup, pushUndoSnapshot, scheduleAutoSave, s2c, spawnCardOnCanvas]);
+  }, [deckId, dropIntoGroup, pushUndoSnapshot, scheduleAutoSave, s2c, spawnCardOnCanvas]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -2311,11 +2340,10 @@ export function DeckView() {
   };
 
   const handleAddGroup = () => {
-    const preset = GROUP_PRESETS[groupColorIdx];
     const r = viewportRef.current!.getBoundingClientRect();
     const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
-    const g = makeGroupEl(groupName || preset.name, preset.color);
-    g.style.cssText = `left:${cp.x - 210}px;top:${cp.y - 80}px;z-index:10;border-color:${preset.color}55;`;
+    const g = makeGroupEl(groupName.trim() || 'New Group', groupColor);
+    g.style.cssText = `left:${cp.x - 210}px;top:${cp.y - 80}px;z-index:10;border-color:${groupColor}55;`;
     canvasRef.current!.appendChild(g);
     makeItemDraggable(g, 'group');
     attachContextMenu(g);
@@ -2325,7 +2353,7 @@ export function DeckView() {
       const wvR = viewportRef.current!.getBoundingClientRect();
       setGroupMenu({ top: btnR.top - wvR.top, left: btnR.right - wvR.left + 6, groupEl: g });
     });
-    // If opened from a multi-selection, drop those cards into the new group
+
     const pending = pendingGroupFromSelRef.current;
     if (pending && pending.size > 0) {
       pending.forEach(cardEl => {
@@ -2333,9 +2361,90 @@ export function DeckView() {
       });
       pendingGroupFromSelRef.current = null;
       clearSel();
+      setGroupModalOpen(false);
+      scheduleAutoSave();
+      return;
     }
+
+    const hasTags = groupPreSelect === 'type' ? groupPreSelectTypeTags.length > 0
+                  : groupPreSelect === 'oracle' ? groupPreSelectOracleTags.length > 0
+                  : false;
+
+    if (groupPreSelect !== 'none' && hasTags && canvasRef.current) {
+      const matchCard = (oid: string): boolean => {
+        const det = cardDetails[oid];
+        if (!det) return false;
+        if (groupPreSelect === 'type') {
+          const tl = (det.type_line || '').toLowerCase();
+          const res = groupPreSelectTypeTags.map(t => tl.includes(t.toLowerCase()));
+          return groupPreSelectTypeOp === 'or' ? res.some(Boolean) : res.every(Boolean);
+        }
+        const fd = (det.full_data || {}) as Record<string, any>;
+        const oracle = fd.oracle_text || fd.card_faces?.[0]?.oracle_text || '';
+        const res = groupPreSelectOracleTags.map(t => { try { return new RegExp(t, 'i').test(oracle); } catch { return false; } });
+        return groupPreSelectOracleOp === 'or' ? res.some(Boolean) : res.every(Boolean);
+      };
+
+      const freeMatches: HTMLDivElement[] = [];
+      const conflictMap = new Map<HTMLDivElement, HTMLDivElement[]>();
+
+      for (const cardEl of Array.from(canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]'))) {
+        const oid = cardEl.dataset.oracleId!;
+        if (!matchCard(oid)) continue;
+        const parentGroup = cardEl.closest<HTMLDivElement>('.group-container');
+        if (!parentGroup) {
+          freeMatches.push(cardEl);
+        } else {
+          if (!conflictMap.has(parentGroup)) conflictMap.set(parentGroup, []);
+          conflictMap.get(parentGroup)!.push(cardEl);
+        }
+      }
+
+      if (conflictMap.size > 0) {
+        const conflicts: PreSelectConflict[] = Array.from(conflictMap.entries()).map(([groupEl, cards]) => ({
+          groupEl,
+          groupName: groupEl.dataset.name || 'Group',
+          groupColor: groupEl.dataset.color || '#888',
+          cards: cards.map(el => {
+            const oid = el.dataset.oracleId!;
+            const det = cardDetails[oid];
+            const fd = (det?.full_data || {}) as Record<string, any>;
+            return { el, oracleId: oid, name: det?.name || oid, artUrl: fd.image_uris?.art_crop || fd.card_faces?.[0]?.image_uris?.art_crop || '' };
+          }),
+        }));
+        const allConflictEls = new Set(conflicts.flatMap(c => c.cards.map(card => card.el)));
+        setPreSelectConfirm({ newGroupEl: g, freeCards: freeMatches, conflicts });
+        setPreSelectConfirmSel(allConflictEls);
+        setPreSelectConfirmOpen(new Set([0]));
+        setGroupModalOpen(false);
+        return;
+      }
+
+      for (const cardEl of freeMatches) dropIntoGroup(cardEl, g);
+    }
+
     setGroupModalOpen(false);
     scheduleAutoSave();
+  };
+
+  const handleConfirmPreSelect = () => {
+    if (!preSelectConfirm) return;
+    const { newGroupEl: g, freeCards, conflicts } = preSelectConfirm;
+    pushUndoSnapshot();
+    for (const cardEl of freeCards) dropIntoGroup(cardEl, g);
+    for (const conflict of conflicts) {
+      for (const card of conflict.cards) {
+        if (preSelectConfirmSel.has(card.el)) dropIntoGroup(card.el, g);
+      }
+    }
+    setPreSelectConfirm(null);
+    scheduleAutoSave();
+  };
+
+  const handleCancelPreSelect = () => {
+    if (!preSelectConfirm) return;
+    preSelectConfirm.newGroupEl.remove();
+    setPreSelectConfirm(null);
   };
 
   // Auto-layout: grid up free-floating cards near existing content.
@@ -2383,85 +2492,6 @@ export function DeckView() {
     scheduleAutoSave();
   }, [clearSel, pushUndoSnapshot, scheduleAutoSave]);
 
-  const handleAutoArrange = useCallback(() => {
-    if (!canvasRef.current || !viewportRef.current) return;
-    const cv = canvasRef.current;
-
-    const ROLE_GROUPS: { label: string; color: string; test: (tl: string) => boolean }[] = [
-      { label: 'Commanders',   color: '#f2ca83', test: tl => false }, // filled by board check
-      { label: 'Creatures',    color: '#86efac', test: tl => /creature/i.test(tl) && !/land/i.test(tl) },
-      { label: 'Instants',     color: '#bcd0ff', test: tl => /^instant/i.test(tl) },
-      { label: 'Sorceries',    color: '#c4b5fd', test: tl => /^sorcery/i.test(tl) },
-      { label: 'Enchantments', color: '#f9a8d4', test: tl => /enchantment/i.test(tl) && !/creature/i.test(tl) },
-      { label: 'Artifacts',    color: '#c4c6cd', test: tl => /artifact/i.test(tl) && !/creature/i.test(tl) },
-      { label: 'Planeswalkers',color: '#c084fc', test: tl => /planeswalker/i.test(tl) },
-      { label: 'Lands',        color: '#d4aa7d', test: tl => /^land/i.test(tl) },
-    ];
-
-    // Gather all free-floating cards (not inside a group) with oracle id
-    const freeCards = Array.from(cv.querySelectorAll<HTMLDivElement>(':scope > .card-stack[data-oracle-id]'));
-    if (!freeCards.length) {
-      useToastStore.getState().push({ type: 'info', title: 'Auto-Arrange', message: 'No free cards to arrange. Move cards out of groups first.' });
-      return;
-    }
-
-    pushUndoSnapshot();
-    clearSel();
-
-    // Bucket each card element into a category
-    const buckets = new Map<string, HTMLDivElement[]>();
-    for (const el of freeCards) {
-      const oid = el.dataset.oracleId!;
-      const dc = deckCards.find(c => c.oracle_id === oid);
-      const typeLine = (cardDetails[oid]?.type_line || '').toLowerCase();
-
-      let label = 'Other';
-      if (dc?.board === 'commander' || dc?.board === 'partner') {
-        label = 'Commanders';
-      } else {
-        for (const rg of ROLE_GROUPS) {
-          if (rg.label === 'Commanders') continue;
-          if (rg.test(typeLine)) { label = rg.label; break; }
-        }
-      }
-      if (!buckets.has(label)) buckets.set(label, []);
-      buckets.get(label)!.push(el);
-    }
-
-    if (!buckets.size) return;
-
-    // Layout groups in a row starting from viewport center
-    const r = viewportRef.current.getBoundingClientRect();
-    const startCanvas = s2c(r.left + 80, r.top + 80);
-    const GROUP_GAP = 48;
-    let curX = startCanvas.x;
-
-    const orderedLabels = [...ROLE_GROUPS.map(rg => rg.label), 'Other'].filter(l => buckets.has(l));
-    for (const label of orderedLabels) {
-      const cards = buckets.get(label)!;
-      const rg = ROLE_GROUPS.find(rg => rg.label === label) ?? { color: '#888' };
-      const g = makeGroupEl(label, rg.color);
-      g.style.left = `${curX}px`;
-      g.style.top  = `${startCanvas.y}px`;
-      g.style.zIndex = '10';
-      cv.appendChild(g);
-      makeItemDraggable(g, 'group');
-      attachContextMenu(g);
-      g.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const btnR = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        const wvR = viewportRef.current!.getBoundingClientRect();
-        setGroupMenu({ top: btnR.top - wvR.top, left: btnR.right - wvR.left + 6, groupEl: g });
-      });
-      for (const cardEl of cards) dropIntoGroup(cardEl, g);
-      // Estimate group width (5 cards per row × ~(160+12)px) to position next group
-      const cols = Math.min(cards.length, 5);
-      curX += cols * 172 + GROUP_GAP;
-    }
-
-    scheduleAutoSave();
-    useToastStore.getState().push({ type: 'success', title: 'Auto-Arranged', message: `Organised ${freeCards.length} cards into ${buckets.size} groups.` });
-  }, [attachContextMenu, cardDetails, clearSel, deckCards, dropIntoGroup, makeItemDraggable, pushUndoSnapshot, s2c, scheduleAutoSave, setGroupMenu]);
 
   const handleAddSticker = () => {
     const r = viewportRef.current!.getBoundingClientRect();
@@ -2479,7 +2509,7 @@ export function DeckView() {
 
   // Keep always-fresh refs so the stable canvas effect can call current handlers
   handleAddStickerRef.current  = handleAddSticker;
-  openGroupModalRef.current    = () => { setGroupModalOpen(true); setGroupName(GROUP_PRESETS[groupColorIdx].name); };
+  openGroupModalRef.current    = () => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); };
   openWidgetPickerRef.current  = () => setWidgetPickerOpen(true);
   reconcileCanvasRef.current   = reconcileCanvas;
 
@@ -2493,7 +2523,12 @@ export function DeckView() {
     pendingGroupFromSelRef.current = new Set(cardEls);
     setMultiMenu(null);
     setGroupModalOpen(true);
-    setGroupName(GROUP_PRESETS[groupColorIdx].name);
+    setGroupName('');
+    setGroupPreSelect('none');
+    setGroupPreSelectTypeTags([]);
+    setGroupPreSelectTypeDraft('');
+    setGroupPreSelectOracleTags([]);
+    setGroupPreSelectOracleDraft('');
   };
 
   // "Delete / Remove from Deck" from multi-selection: removes all selected
@@ -2793,11 +2828,19 @@ export function DeckView() {
     const data = buildWidgetDataFromState(deckCards, cardDetails, rawGrps, cardStatuses);
     refreshAllWidgets(data);
   }, [deckCards, cardDetails, cardStatuses, refreshAllWidgets]);
-  // Refresh all decorator overlays (standalone pills + widget-embedded badges) whenever deck card data changes
+  // Refresh all decorator overlays (standalone pills + widget-embedded badges) whenever deck card data changes.
+  // Debounced to avoid sweeping the entire DOM on every card add during bulk operations.
   useEffect(() => {
     if (!canvasRef.current || !deckCards.length) return;
-    refreshAllDecoratorOverlays();
-    refreshAllWidgetDecorators();
+    if (decoratorDebounceRef.current) clearTimeout(decoratorDebounceRef.current);
+    decoratorDebounceRef.current = setTimeout(() => {
+      decoratorDebounceRef.current = null;
+      refreshAllDecoratorOverlays();
+      refreshAllWidgetDecorators();
+    }, 300);
+    return () => {
+      if (decoratorDebounceRef.current) clearTimeout(decoratorDebounceRef.current);
+    };
   }, [deckCards, cardDetails, refreshAllDecoratorOverlays, refreshAllWidgetDecorators]);
   const totalCards = deckCards.reduce((s, c) => s + (c.quantity || 1), 0);
 
@@ -2821,37 +2864,10 @@ export function DeckView() {
     return { owned, total: main.length, pct: main.length > 0 ? Math.round((owned / main.length) * 100) : 0 };
   })();
 
-  // ── Hand simulator ────────────────────────────────────────────────────────
-  const [simHand, setSimHand] = useState<{ oracleId: string; name: string; imgUrl: string; typeLine: string; manaCost: string; }[]>([]);
-  const [simMulligans, setSimMulligans] = useState(0);
-  const [simLibSize, setSimLibSize] = useState(0);
-
   // ── Combo detection ───────────────────────────────────────────────────────
   type ComboResult = { id: string; cards: string[]; results: string[]; description: string; identity: string };
   const [combos, setCombos] = useState<ComboResult[]>([]);
   const [combosStatus, setCombosStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-
-  const drawSimHand = useCallback((handSize: number) => {
-    const pool: string[] = [];
-    const mainCards = deckCards.filter(dc => dc.board === 'main' || dc.board === 'commander');
-    for (const dc of mainCards) {
-      for (let i = 0; i < (dc.quantity || 1); i++) pool.push(dc.oracle_id);
-    }
-    if (pool.length < handSize) return;
-    // Fisher-Yates shuffle
-    for (let i = pool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [pool[i], pool[j]] = [pool[j], pool[i]];
-    }
-    const drawn = pool.slice(0, handSize);
-    setSimHand(drawn.map(oid => {
-      const det = cardDetails[oid];
-      const fd = (det?.full_data || {}) as Record<string, any>;
-      const imgUrl = fd.image_uris?.small || fd.card_faces?.[0]?.image_uris?.small || '';
-      return { oracleId: oid, name: det?.name || oid, imgUrl, typeLine: det?.type_line || '', manaCost: det?.mana_cost || '' };
-    }));
-    setSimLibSize(pool.length - handSize);
-  }, [deckCards, cardDetails]);
 
   const missingCards = (() => {
     return deckCards
@@ -2865,20 +2881,14 @@ export function DeckView() {
   })();
 
   // ── Commander color-identity violations ───────────────────────────────────
-  const commanderColorIdentity = (() => {
+  const commanderColorIdentity = useMemo(() => {
     const ci = deck?.color_identity;
     if (!ci) return null;
     const arr: string[] = Array.isArray(ci) ? ci : (() => { try { return JSON.parse(ci as string); } catch { return []; } })();
     return new Set(arr);
-  })();
+  }, [deck?.color_identity]);
 
-  const BASIC_LAND_NAMES = new Set([
-    'Plains', 'Island', 'Swamp', 'Mountain', 'Forest', 'Wastes',
-    'Snow-Covered Plains', 'Snow-Covered Island', 'Snow-Covered Swamp',
-    'Snow-Covered Mountain', 'Snow-Covered Forest',
-  ]);
-
-  const violatingOracleIds = (() => {
+  const violatingOracleIds = useMemo(() => {
     if (deck?.format !== 'commander' || !commanderColorIdentity) return new Set<string>();
     const violations = new Set<string>();
     for (const dc of deckCards) {
@@ -2890,9 +2900,9 @@ export function DeckView() {
       if (cardColors.some(c => !commanderColorIdentity.has(c))) violations.add(dc.oracle_id);
     }
     return violations;
-  })();
+  }, [deck?.format, commanderColorIdentity, deckCards, cardDetails]);
 
-  const singletonViolations = (() => {
+  const singletonViolations = useMemo(() => {
     if (deck?.format !== 'commander') return new Set<string>();
     const violations = new Set<string>();
     for (const dc of deckCards) {
@@ -2901,7 +2911,7 @@ export function DeckView() {
       if ((dc.quantity || 1) > 1) violations.add(dc.oracle_id);
     }
     return violations;
-  })();
+  }, [deck?.format, deckCards, cardDetails]);
 
   // ── Push/clear color-identity violation badges on canvas cards ────────────
   useEffect(() => {
@@ -3052,13 +3062,6 @@ export function DeckView() {
               </button>
             )}
             <button
-              onClick={() => handleTabChange('simulate')}
-              className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'simulate' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
-            >
-              <span className="material-symbols-outlined text-[16px]">casino</span>
-              Simulate
-            </button>
-            <button
               onClick={() => handleTabChange('combos')}
               className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'combos' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
             >
@@ -3157,18 +3160,10 @@ export function DeckView() {
               </ToolbarTooltip>
               <ToolbarTooltip label="Add Group" shortcut="G">
                 <button
-                  onClick={() => { setGroupModalOpen(true); setGroupName(GROUP_PRESETS[groupColorIdx].name); }}
+                  onClick={() => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/5 hover:text-primary transition-all text-label-md font-bold"
                 >
                   <span className="material-symbols-outlined text-[16px]">folder_open</span>Group
-                </button>
-              </ToolbarTooltip>
-              <ToolbarTooltip label="Auto-Arrange by Type">
-                <button
-                  onClick={handleAutoArrange}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/5 hover:text-primary transition-all text-label-md font-bold"
-                >
-                  <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>Arrange
                 </button>
               </ToolbarTooltip>
               <ToolbarTooltip label="Add Note" shortcut="N">
@@ -3932,113 +3927,6 @@ export function DeckView() {
             </div>
           )}
 
-          {/* ── Hand simulator ── */}
-          {tab === 'simulate' && (
-            <div className="absolute inset-0 overflow-y-auto bg-background">
-              <div className="max-w-4xl mx-auto px-8 py-6">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h2 className="font-headline-md text-lg text-on-surface font-bold">Hand Simulator</h2>
-                    <p className="text-[11px] text-on-surface-variant/45 mt-0.5">
-                      {simLibSize > 0 ? `${simLibSize} cards remaining in library` : 'Draw an opening hand to get started'}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => { setSimMulligans(0); drawSimHand(7); }}
-                      className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all"
-                      style={{ background: 'rgba(242,202,131,0.12)', border: '1px solid rgba(242,202,131,0.25)', color: '#f2ca83' }}
-                    >
-                      <span className="material-symbols-outlined text-[15px]">casino</span>
-                      Draw 7
-                    </button>
-                    {simHand.length > 0 && (
-                      <button
-                        onClick={() => {
-                          const next = simMulligans + 1;
-                          setSimMulligans(next);
-                          drawSimHand(Math.max(1, 7 - next));
-                        }}
-                        disabled={7 - simMulligans <= 1}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all disabled:opacity-30"
-                        style={{ background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.2)', color: '#fbbf24' }}
-                      >
-                        <span className="material-symbols-outlined text-[15px]">refresh</span>
-                        Mulligan {simMulligans > 0 ? `(${7 - simMulligans} cards)` : ''}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {simMulligans > 0 && (
-                  <p className="text-[11px] text-on-surface-variant/40 mb-4">
-                    Mulligan #{simMulligans} — drew {Math.max(1, 7 - simMulligans)} cards (London mulligan)
-                  </p>
-                )}
-
-                {simHand.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-                    <span className="material-symbols-outlined text-[56px] text-on-surface-variant/10">casino</span>
-                    <p className="text-[13px] text-on-surface-variant/30">Click "Draw 7" to simulate your opening hand</p>
-                  </div>
-                ) : (
-                  <>
-                    <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
-                      {simHand.map((card, i) => (
-                        <div key={i} className="flex flex-col gap-1.5">
-                          <button
-                            onClick={() => setDetailOracleId(card.oracleId)}
-                            className="rounded-xl overflow-hidden hover:ring-1 hover:ring-primary/40 transition-all"
-                            style={{ aspectRatio: '488/680', background: '#1a1d22' }}
-                          >
-                            {card.imgUrl ? (
-                              <img src={card.imgUrl} alt={card.name} className="w-full h-full object-cover" loading="lazy" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                <span className="material-symbols-outlined text-[32px] text-white/10">playing_cards</span>
-                              </div>
-                            )}
-                          </button>
-                          <p className="text-[10px] text-on-surface/70 text-center truncate px-1" title={card.name}>{card.name}</p>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Hand analysis */}
-                    <div className="mt-6 grid grid-cols-3 gap-3">
-                      {(() => {
-                        const landCount = simHand.filter(c => c.typeLine.toLowerCase().includes('land')).length;
-                        const nonLandCount = simHand.length - landCount;
-                        const avgCmc = simHand.reduce((s, c) => {
-                          const m = c.manaCost.replace(/[^0-9WUBRG]/g, '');
-                          const generic = parseInt(m) || 0;
-                          const pips = (m.match(/[WUBRG]/g) || []).length;
-                          return s + generic + pips;
-                        }, 0) / Math.max(1, nonLandCount);
-                        return (
-                          <>
-                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                              <p className="text-[22px] font-black tabular-nums" style={{ color: landCount >= 2 && landCount <= 4 ? '#4ade80' : '#f87171' }}>{landCount}</p>
-                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Lands</p>
-                            </div>
-                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                              <p className="text-[22px] font-black tabular-nums text-on-surface">{nonLandCount}</p>
-                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Spells</p>
-                            </div>
-                            <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                              <p className="text-[22px] font-black tabular-nums text-primary">{avgCmc.toFixed(1)}</p>
-                              <p className="text-[10px] text-on-surface-variant/40 mt-0.5">Avg CMC</p>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* ── Combos panel ── */}
           {tab === 'combos' && (
             <div className="absolute inset-0 overflow-y-auto bg-background">
@@ -4144,6 +4032,7 @@ export function DeckView() {
             deckId={deckId}
             addBoard="main"
             deckFormat={deck?.format}
+            initialImageUrl={detailOracleId ? preferredImagesRef.current[detailOracleId] : undefined}
             onClose={() => setDetailOracleId(null)}
             onAddToDeck={handleAddFromDetail}
             onCoverChange={(url) => setDeck(prev => prev ? { ...prev, cover_image_url: url } : prev)}
@@ -4171,32 +4060,267 @@ export function DeckView() {
         <div
           className="absolute inset-0 z-50 flex items-center justify-center"
           style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={e => { if (e.target === e.currentTarget) { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); } }}
         >
-          <div className="glass-panel rounded-2xl p-6 w-80 shadow-2xl border border-white/5">
+          <div className="glass-panel rounded-2xl p-6 w-96 shadow-2xl border border-white/5">
             <h3 className="font-headline-md text-base text-on-surface font-bold mb-4">New Group</h3>
+
+            {/* Color + Name row */}
             <label className="text-label-md text-on-surface-variant/60 block mb-1.5">Name</label>
-            <input
-              type="text"
-              value={groupName}
-              onChange={e => setGroupName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleAddGroup(); if (e.key === 'Escape') { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); } }}
-              placeholder="e.g. Creatures"
-              autoFocus
-              className="w-full bg-surface-container/60 border border-white/5 rounded-lg px-3 py-2 text-body-md text-on-surface focus:outline-none focus:border-primary/50 mb-4 placeholder:text-on-surface-variant/30"
-            />
-            <label className="text-label-md text-on-surface-variant/60 block mb-2">Color</label>
-            <div className="flex gap-2 mb-6">
-              {GROUP_PRESETS.map((p, i) => (
-                <button key={i} onClick={() => { setGroupColorIdx(i); setGroupName(prev => GROUP_PRESETS.some(g => g.name === prev) ? p.name : prev); }}
-                  className="w-6 h-6 rounded-full transition-all hover:scale-110"
-                  style={{ background: p.color, outline: groupColorIdx === i ? '2px solid white' : 'none', outlineOffset: 2 }}
-                  title={p.name}
+            <div className="flex items-center gap-2 mb-4">
+              <label
+                className="w-8 h-8 rounded-full flex-shrink-0 cursor-pointer relative overflow-hidden border-2 transition-all hover:scale-105"
+                style={{ borderColor: groupColor + '88', background: groupColor }}
+                title="Pick color"
+              >
+                <input
+                  type="color"
+                  value={groupColor}
+                  onChange={e => setGroupColor(e.target.value)}
+                  className="absolute inset-0 opacity-0 w-full h-full cursor-pointer"
                 />
+              </label>
+              <input
+                type="text"
+                value={groupName}
+                onChange={e => setGroupName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleAddGroup(); if (e.key === 'Escape') { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); } }}
+                placeholder="New Group"
+                autoFocus
+                className="flex-1 bg-surface-container/60 border border-white/5 rounded-lg px-3 py-2 text-body-md text-on-surface focus:outline-none focus:border-primary/50 placeholder:text-on-surface-variant/30"
+              />
+            </div>
+
+            {/* Pre Select By */}
+            <label className="text-label-md text-on-surface-variant/60 block mb-2">Pre Select By</label>
+            <div className="flex gap-1.5 mb-3">
+              {(['none', 'type', 'oracle'] as const).map(opt => (
+                <button
+                  key={opt}
+                  onClick={() => setGroupPreSelect(opt)}
+                  className="px-2.5 py-1 rounded-md text-[10px] font-bold transition-all border"
+                  style={{
+                    background:  groupPreSelect === opt ? 'rgba(242,202,131,0.12)' : 'rgba(255,255,255,0.04)',
+                    borderColor: groupPreSelect === opt ? 'rgba(242,202,131,0.35)' : 'rgba(255,255,255,0.07)',
+                    color:       groupPreSelect === opt ? '#f2ca83'                 : 'rgba(255,255,255,0.4)',
+                  }}
+                >
+                  {opt === 'none' ? 'None' : opt === 'type' ? 'Card Type' : 'Oracle Text'}
+                </button>
               ))}
             </div>
-            <div className="flex gap-3">
+
+            {groupPreSelect === 'type' && (
+              <div className="mb-4 space-y-2">
+                <div
+                  className="flex flex-wrap gap-1.5 min-h-[38px] bg-surface-container/60 border border-white/5 rounded-lg px-2 py-1.5 focus-within:border-primary/50 cursor-text"
+                  onClick={e => (e.currentTarget.querySelector('input') as HTMLInputElement)?.focus()}
+                >
+                  {groupPreSelectTypeTags.map(tag => (
+                    <span key={tag} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0" style={{ background: 'rgba(242,202,131,0.15)', border: '1px solid rgba(242,202,131,0.3)', color: '#f2ca83' }}>
+                      {tag}
+                      <button onClick={() => setGroupPreSelectTypeTags(prev => prev.filter(t => t !== tag))} className="opacity-60 hover:opacity-100 transition-opacity leading-none">✕</button>
+                    </span>
+                  ))}
+                  <input
+                    type="text"
+                    value={groupPreSelectTypeDraft}
+                    onChange={e => setGroupPreSelectTypeDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if ((e.key === 'Enter' || e.key === ',') && groupPreSelectTypeDraft.trim()) {
+                        e.preventDefault();
+                        const val = groupPreSelectTypeDraft.trim().replace(/,$/, '');
+                        if (val && !groupPreSelectTypeTags.includes(val)) setGroupPreSelectTypeTags(prev => [...prev, val]);
+                        setGroupPreSelectTypeDraft('');
+                      } else if (e.key === 'Backspace' && !groupPreSelectTypeDraft && groupPreSelectTypeTags.length) {
+                        setGroupPreSelectTypeTags(prev => prev.slice(0, -1));
+                      }
+                    }}
+                    placeholder={groupPreSelectTypeTags.length ? '' : 'Creature, Human, Snow…'}
+                    className="flex-1 min-w-[80px] bg-transparent text-[11px] text-on-surface focus:outline-none placeholder:text-on-surface-variant/30"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] text-on-surface-variant/30">Types, subtypes or supertypes. Enter or , to add.</p>
+                  <div className="flex bg-surface-container/40 rounded-lg p-0.5 gap-0.5">
+                    {(['or', 'and'] as const).map(op => (
+                      <button key={op} onClick={() => setGroupPreSelectTypeOp(op)} className="px-2.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all" style={{ background: groupPreSelectTypeOp === op ? 'rgba(242,202,131,0.15)' : 'transparent', color: groupPreSelectTypeOp === op ? '#f2ca83' : 'rgba(255,255,255,0.3)' }}>{op}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {groupPreSelect === 'oracle' && (
+              <div className="mb-4 space-y-2">
+                <div
+                  className="flex flex-wrap gap-1.5 min-h-[38px] bg-surface-container/60 border border-white/5 rounded-lg px-2 py-1.5 focus-within:border-primary/50 cursor-text"
+                  onClick={e => (e.currentTarget.querySelector('input') as HTMLInputElement)?.focus()}
+                >
+                  {groupPreSelectOracleTags.map(tag => (
+                    <span key={tag} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold font-mono flex-shrink-0" style={{ background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', color: '#a78bfa' }}>
+                      {tag}
+                      <button onClick={() => setGroupPreSelectOracleTags(prev => prev.filter(t => t !== tag))} className="opacity-60 hover:opacity-100 transition-opacity leading-none">✕</button>
+                    </span>
+                  ))}
+                  <input
+                    type="text"
+                    value={groupPreSelectOracleDraft}
+                    onChange={e => setGroupPreSelectOracleDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if ((e.key === 'Enter' || e.key === ',') && groupPreSelectOracleDraft.trim()) {
+                        e.preventDefault();
+                        const val = groupPreSelectOracleDraft.trim().replace(/,$/, '');
+                        if (val && !groupPreSelectOracleTags.includes(val)) setGroupPreSelectOracleTags(prev => [...prev, val]);
+                        setGroupPreSelectOracleDraft('');
+                      } else if (e.key === 'Backspace' && !groupPreSelectOracleDraft && groupPreSelectOracleTags.length) {
+                        setGroupPreSelectOracleTags(prev => prev.slice(0, -1));
+                      }
+                    }}
+                    placeholder={groupPreSelectOracleTags.length ? '' : 'draw a card, scry, enters.*tapped…'}
+                    className="flex-1 min-w-[80px] bg-transparent text-[11px] font-mono text-on-surface focus:outline-none placeholder:text-on-surface-variant/30"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] text-on-surface-variant/30">Regex supported. Matched against oracle text. Enter or , to add.</p>
+                  <div className="flex bg-surface-container/40 rounded-lg p-0.5 gap-0.5">
+                    {(['or', 'and'] as const).map(op => (
+                      <button key={op} onClick={() => setGroupPreSelectOracleOp(op)} className="px-2.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider transition-all" style={{ background: groupPreSelectOracleOp === op ? 'rgba(242,202,131,0.15)' : 'transparent', color: groupPreSelectOracleOp === op ? '#f2ca83' : 'rgba(255,255,255,0.3)' }}>{op}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-2">
               <button onClick={() => { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); }} className="flex-1 py-2 rounded-lg border border-white/5 text-on-surface-variant text-label-md font-bold hover:bg-white/5 transition-all">Cancel</button>
               <button onClick={handleAddGroup} className="flex-1 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-label-md font-bold hover:bg-primary/20 transition-all">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-select confirmation modal */}
+      {preSelectConfirm && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        >
+          <div className="glass-panel rounded-2xl shadow-2xl border border-white/5 w-[480px] max-h-[70vh] flex flex-col">
+            {/* Header */}
+            <div className="px-6 pt-5 pb-4 border-b border-white/5 flex-shrink-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="material-symbols-outlined text-[16px]" style={{ color: '#f2ca83' }}>warning</span>
+                <h3 className="font-headline-md text-base text-on-surface font-bold">Cards Already in Groups</h3>
+              </div>
+              <p className="text-[11px] text-on-surface-variant/50">
+                {preSelectConfirm.conflicts.reduce((s, c) => s + c.cards.length, 0)} cards across {preSelectConfirm.conflicts.length} group{preSelectConfirm.conflicts.length !== 1 ? 's' : ''} match your pre-select rule.
+                {preSelectConfirm.freeCards.length > 0 && (
+                  <span className="text-on-surface-variant/35"> {preSelectConfirm.freeCards.length} free card{preSelectConfirm.freeCards.length !== 1 ? 's' : ''} will move automatically.</span>
+                )}
+              </p>
+            </div>
+
+            {/* Accordions */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+              {preSelectConfirm.conflicts.map((conflict, ci) => {
+                const isOpen = preSelectConfirmOpen.has(ci);
+                const selectedCount = conflict.cards.filter(card => preSelectConfirmSel.has(card.el)).length;
+                const allSelected = selectedCount === conflict.cards.length;
+                const noneSelected = selectedCount === 0;
+
+                const toggleGroupAll = () => {
+                  setPreSelectConfirmSel(prev => {
+                    const next = new Set(prev);
+                    if (allSelected) {
+                      conflict.cards.forEach(card => next.delete(card.el));
+                    } else {
+                      conflict.cards.forEach(card => next.add(card.el));
+                    }
+                    return next;
+                  });
+                };
+
+                const toggleAccordion = () => {
+                  setPreSelectConfirmOpen(prev => {
+                    const next = new Set(prev);
+                    next.has(ci) ? next.delete(ci) : next.add(ci);
+                    return next;
+                  });
+                };
+
+                return (
+                  <div key={ci} className="rounded-xl border overflow-hidden" style={{ borderColor: conflict.groupColor + '33', background: 'rgba(255,255,255,0.02)' }}>
+                    {/* Accordion header */}
+                    <div className="flex items-center gap-2.5 px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = !allSelected && !noneSelected; }}
+                        onChange={toggleGroupAll}
+                        className="flex-shrink-0 accent-primary w-3.5 h-3.5 cursor-pointer"
+                      />
+                      <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: conflict.groupColor, boxShadow: `0 0 6px ${conflict.groupColor}66` }} />
+                      <button onClick={toggleAccordion} className="flex-1 flex items-center justify-between text-left min-w-0">
+                        <span className="text-[12px] font-bold text-on-surface truncate">{conflict.groupName}</span>
+                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: conflict.groupColor + '22', color: conflict.groupColor }}>
+                            {selectedCount}/{conflict.cards.length} selected
+                          </span>
+                          <span className="material-symbols-outlined text-[14px] text-on-surface-variant/40 transition-transform" style={{ transform: isOpen ? 'rotate(180deg)' : 'none' }}>expand_more</span>
+                        </div>
+                      </button>
+                    </div>
+
+                    {/* Accordion body */}
+                    {isOpen && (
+                      <div className="px-3 pb-3 border-t border-white/5 pt-2 grid grid-cols-1 gap-1">
+                        {conflict.cards.map((card, ki) => {
+                          const checked = preSelectConfirmSel.has(card.el);
+                          return (
+                            <label key={ki} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer transition-all hover:bg-white/5">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setPreSelectConfirmSel(prev => {
+                                    const next = new Set(prev);
+                                    checked ? next.delete(card.el) : next.add(card.el);
+                                    return next;
+                                  });
+                                }}
+                                className="flex-shrink-0 accent-primary w-3.5 h-3.5 cursor-pointer"
+                              />
+                              {card.artUrl ? (
+                                <img src={card.artUrl} alt="" className="w-10 h-7 rounded object-cover flex-shrink-0" loading="lazy" />
+                              ) : (
+                                <div className="w-10 h-7 rounded flex items-center justify-center flex-shrink-0 bg-white/5">
+                                  <span className="material-symbols-outlined text-[14px] text-white/20">playing_cards</span>
+                                </div>
+                              )}
+                              <span className="text-[11px] text-on-surface/80 truncate">{card.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-white/5 flex-shrink-0 flex gap-3">
+              <button onClick={handleCancelPreSelect} className="flex-1 py-2 rounded-lg border border-white/5 text-on-surface-variant text-label-md font-bold hover:bg-white/5 transition-all">Cancel</button>
+              <button
+                onClick={handleConfirmPreSelect}
+                className="flex-1 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-label-md font-bold hover:bg-primary/20 transition-all"
+              >
+                {(() => {
+                  const n = preSelectConfirm.conflicts.reduce((s, c) => s + c.cards.filter(card => preSelectConfirmSel.has(card.el)).length, 0) + preSelectConfirm.freeCards.length;
+                  return `Move ${n} Card${n !== 1 ? 's' : ''}`;
+                })()}
+              </button>
             </div>
           </div>
         </div>

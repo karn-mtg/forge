@@ -2,8 +2,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 
 interface TooltipState {
-  x: number;
-  y: number;
   imgUrl: string;
   name: string;
 }
@@ -35,9 +33,13 @@ async function fetchImageUrl(oracleId: string): Promise<string> {
 
 export function GlobalCardTooltip() {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
-  const activeOidRef = useRef<string | null>(null);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeOidRef  = useRef<string | null>(null);
+  const hideTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Position is tracked via refs and applied directly to the DOM — never via state
+  const posRef        = useRef({ x: 0, y: 0 });
+  const tooltipElRef  = useRef<HTMLImageElement | null>(null);
+  const moveRafRef    = useRef<number | null>(null);
 
   const hide = useCallback(() => {
     if (showTimerRef.current) clearTimeout(showTimerRef.current);
@@ -61,12 +63,11 @@ export function GlobalCardTooltip() {
 
       activeOidRef.current = oid;
       const name = target.dataset.cardName || target.textContent || '';
-      const x = e.clientX;
-      const y = e.clientY;
+      posRef.current = { x: e.clientX, y: e.clientY };
 
       const cached = getImageUrl(oid);
       if (cached !== null) {
-        if (cached) setTooltip({ x, y, imgUrl: cached, name });
+        if (cached) setTooltip({ imgUrl: cached, name });
         return;
       }
 
@@ -74,13 +75,26 @@ export function GlobalCardTooltip() {
         if (activeOidRef.current !== oid) return;
         const url = await fetchImageUrl(oid);
         if (activeOidRef.current !== oid) return;
-        if (url) setTooltip({ x, y, imgUrl: url, name });
-      }, 350); // 350ms delay before fetching
+        if (url) setTooltip({ imgUrl: url, name });
+      }, 350);
     };
 
+    // Position is written directly to the DOM element via rAF — no React state update
     const onMove = (e: MouseEvent) => {
-      if (!tooltip) return;
-      setTooltip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null);
+      if (!tooltipElRef.current) return;
+      posRef.current = { x: e.clientX, y: e.clientY };
+      if (moveRafRef.current === null) {
+        moveRafRef.current = requestAnimationFrame(() => {
+          moveRafRef.current = null;
+          const el = tooltipElRef.current;
+          if (!el) return;
+          const { x, y } = posRef.current;
+          const left = Math.max(8, Math.min(x - 220, window.innerWidth - 228));
+          const top  = Math.max(8, Math.min(y - 20,  window.innerHeight - 316));
+          el.style.left = `${left}px`;
+          el.style.top  = `${top}px`;
+        });
+      }
     };
 
     document.addEventListener('mouseover', onOver);
@@ -88,16 +102,19 @@ export function GlobalCardTooltip() {
     return () => {
       document.removeEventListener('mouseover', onOver);
       document.removeEventListener('mousemove', onMove);
+      if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
     };
-  }, [hide, tooltip]);
+  }, [hide]); // tooltip removed from deps — listeners mount once and stay stable
 
   if (!tooltip) return null;
 
-  const left = Math.max(8, Math.min(tooltip.x - 220, window.innerWidth - 228));
-  const top  = Math.min(tooltip.y - 20, window.innerHeight - 316);
+  const { x, y } = posRef.current;
+  const left = Math.max(8, Math.min(x - 220, window.innerWidth - 228));
+  const top  = Math.min(y - 20, window.innerHeight - 316);
 
   return createPortal(
     <img
+      ref={tooltipElRef}
       src={tooltip.imgUrl}
       alt={tooltip.name}
       style={{

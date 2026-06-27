@@ -258,10 +258,15 @@ function searchCards(db, {
 
   if (!hasAnyFilter) return { cards: [] };
 
+  // full_data (large Scryfall JSON blob) is excluded from search results — only getCard needs it
+  const SEARCH_COLS = `c.oracle_id, c.name, c.type_line, c.oracle_text, c.color_identity,
+    c.cmc, c.mana_cost, c.keywords, c.legalities, c.reserved,
+    c.image_url, c.released_at, c.sets, c.colors`;
+
   let rows;
   if (ftsQuery) {
     rows = db.prepare(`
-      SELECT c.*
+      SELECT ${SEARCH_COLS}
       FROM cards_fts
       JOIN cards c ON c.rowid = cards_fts.rowid
       WHERE cards_fts MATCH ?
@@ -271,7 +276,7 @@ function searchCards(db, {
     `).all(ftsQuery, pageSize, offset);
   } else {
     rows = db.prepare(`
-      SELECT c.*
+      SELECT ${SEARCH_COLS}
       FROM cards c
       WHERE 1=1 ${extraWhere}
       ORDER BY c.name ASC
@@ -279,9 +284,7 @@ function searchCards(db, {
     `).all(pageSize, offset);
   }
 
-  return {
-    cards: rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) })),
-  };
+  return { cards: rows };
 }
 
 function getCard(db, { oracleId }) {
@@ -314,6 +317,12 @@ function getCardsByNames(db, { names }) {
   const placeholders = names.map(() => '?').join(',');
   const rows = db.prepare(`SELECT * FROM cards WHERE name IN (${placeholders})`).all(...names);
   return rows.map(row => Object.assign({}, row, { full_data: fromJson(row.full_data) }));
+}
+
+function getCardsByNamesLight(db, { names }) {
+  if (!names || !names.length) return [];
+  const placeholders = names.map(() => '?').join(',');
+  return db.prepare(`SELECT oracle_id, name FROM cards WHERE name IN (${placeholders})`).all(...names);
 }
 
 function getRoleTags(db, { oracleIds }) {
@@ -424,6 +433,7 @@ module.exports = {
   getCardImages,
   getCardsBatch,
   getCardsByNames,
+  getCardsByNamesLight,
   getRoleTags,
   searchByRole,
   getCardMetadata,

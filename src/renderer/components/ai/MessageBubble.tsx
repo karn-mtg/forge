@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { marked } from 'marked';
 import type { ChatMessage } from '../../store/useAIStore';
+import { BlockRenderer } from './blocks/BlockRenderer';
 
 marked.use({ breaks: true, gfm: true });
 
@@ -10,9 +11,13 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const html = useMemo(() => {
-    if (message.role === 'user') return null;
+    if (message.role !== 'assistant') return null;
     return marked.parse(message.text) as string;
-  }, [message.text, message.role]);
+  }, [message.role === 'assistant' ? message.text : '']);
+
+  if (message.role === 'block') {
+    return <BlockRenderer event={message.event} answered={message.answered} />;
+  }
 
   if (message.role === 'user') {
     return (
@@ -41,6 +46,7 @@ export function MessageBubble({ message }: Props) {
     );
   }
 
+  // assistant
   return (
     <div className="flex justify-start mb-3">
       <div

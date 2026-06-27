@@ -29,9 +29,11 @@ interface CardDetailPanelProps {
   onFindSimilar?: (query: string) => void;
   /** Active deck format, e.g. 'commander'. Used for banned-card warnings. */
   deckFormat?: string;
+  /** Previously selected image URL for this card — restores the user's print choice on open. */
+  initialImageUrl?: string;
 }
 
-export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDeck, onCoverChange, onPrintingChange, onFindSimilar, deckFormat }: CardDetailPanelProps) {
+export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDeck, onCoverChange, onPrintingChange, onFindSimilar, deckFormat, initialImageUrl }: CardDetailPanelProps) {
   const [card, setCard] = useState<Card | null>(null);
   const [images, setImages] = useState<CardImage[]>([]);
   const [currentImgUrl, setCurrentImgUrl] = useState('');
@@ -65,7 +67,13 @@ export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDe
     ]).then(([c, imgs]) => {
       setCard(c);
       setImages(imgs || []);
-      const bestImg = (imgs || []).find(i => !i.promo && i.image_uris) || (imgs || []).find(i => i.image_uris) || null;
+      const preferred = initialImageUrl
+        ? (imgs || []).find(i => i.image_uris?.normal === initialImageUrl)
+        : null;
+      const bestImg = preferred
+        || (imgs || []).find(i => !i.promo && i.image_uris)
+        || (imgs || []).find(i => i.image_uris)
+        || null;
       const fd = c?.full_data || {};
       const url = bestImg?.image_uris?.normal
         || fd.image_uris?.normal
@@ -77,7 +85,7 @@ export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDe
       console.error('Card detail error:', err);
       useToastStore.getState().push({ type: 'error', title: 'Failed to load card details', message: String(err) });
     }).finally(() => setIsLoading(false));
-  }, [oracleId]);
+  }, [oracleId, initialImageUrl]);
 
   // Async enrichment: role tags + EDHREC % once card is loaded
   useEffect(() => {

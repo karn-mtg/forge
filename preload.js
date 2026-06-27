@@ -61,25 +61,42 @@ contextBridge.exposeInMainWorld('settingsAPI', {
 });
 
 contextBridge.exposeInMainWorld('aiAPI', {
-  checkClaude:     ()      => ipcRenderer.invoke('ai:checkClaude'),
-  chat:            (text)  => ipcRenderer.invoke('ai:chat', { text }),
-  abort:           ()      => ipcRenderer.invoke('ai:abort'),
-  clearSession:    ()      => ipcRenderer.invoke('ai:clearSession'),
-  getMemory:       ()      => ipcRenderer.invoke('ai:getMemory'),
-  upsertMemory:    (args)  => ipcRenderer.invoke('ai:upsertMemory', args),
-  deleteMemory:    (args)  => ipcRenderer.invoke('ai:deleteMemory', args),
+  checkClaude:     ()                          => ipcRenderer.invoke('ai:checkClaude'),
+  chat:            (text, context, sessionHandle) => ipcRenderer.invoke('ai:chat', { text, context, sessionHandle }),
+  abort:           ()                          => ipcRenderer.invoke('ai:abort'),
+  clearSession:    ()                          => ipcRenderer.invoke('ai:clearSession'),
+  resetProvider:   ()                          => ipcRenderer.invoke('ai:resetProvider'),
+  getMemory:       ()                          => ipcRenderer.invoke('ai:getMemory'),
+  upsertMemory:    (args)                      => ipcRenderer.invoke('ai:upsertMemory', args),
+  deleteMemory:    (args)                      => ipcRenderer.invoke('ai:deleteMemory', args),
   onToken:         (cb)    => ipcRenderer.on('ai:token', (_e, t) => cb(t)),
-  onDone:          (cb)    => ipcRenderer.on('ai:done', (_e, d) => cb(d)),
+  onDone:          (cb)    => ipcRenderer.on('ai:done',  (_e, d) => cb(d)),
   onError:         (cb)    => ipcRenderer.on('ai:error', (_e, e) => cb(e)),
   removeListeners: ()      => ['ai:token', 'ai:done', 'ai:error'].forEach(c => ipcRenderer.removeAllListeners(c)),
+
+  // Conversation persistence
+  createConversation:       (args) => ipcRenderer.invoke('ai:createConversation', args),
+  getConversations:         (args) => ipcRenderer.invoke('ai:getConversations', args),
+  getConversation:          (args) => ipcRenderer.invoke('ai:getConversation', args),
+  deleteConversation:       (args) => ipcRenderer.invoke('ai:deleteConversation', args),
+  appendMessage:            (args) => ipcRenderer.invoke('ai:appendMessage', args),
+  updateConversationHandle: (args) => ipcRenderer.invoke('ai:updateConversationHandle', args),
+  addDeclinedOracleId:      (args) => ipcRenderer.invoke('ai:addDeclinedOracleId', args),
+
+  // Chat controller block events (emitted by Claude via the chat-controller MCP)
+  onBlock:              (cb) => ipcRenderer.on('ai:block', (_e, event) => cb(event)),
+  onAsk:                (cb) => ipcRenderer.on('ai:ask',   (_e, event) => cb(event)),
+  respondToAsk:         (requestId, value) => ipcRenderer.send(`ai:askResponse:${requestId}`, value),
+  removeBlockListeners: ()   => { ipcRenderer.removeAllListeners('ai:block'); ipcRenderer.removeAllListeners('ai:ask'); },
+
   // Card query — isolated session, no --resume, returns oracle_ids
-  cardQuery:               (prompt) => ipcRenderer.invoke('ai:cardQuery', { prompt }),
-  cardQueryAbort:          ()       => ipcRenderer.invoke('ai:cardQueryAbort'),
-  onCardQueryToken:        (cb)     => ipcRenderer.on('ai:cardQueryToken',  (_e, t) => cb(t)),
-  onCardQueryResult:       (cb)     => ipcRenderer.on('ai:cardQueryResult', (_e, d) => cb(d)),
-  onCardQueryDone:         (cb)     => ipcRenderer.on('ai:cardQueryDone',   ()      => cb()),
-  onCardQueryError:        (cb)     => ipcRenderer.on('ai:cardQueryError',  (_e, e) => cb(e)),
-  removeCardQueryListeners: ()      => ['ai:cardQueryToken', 'ai:cardQueryResult', 'ai:cardQueryDone', 'ai:cardQueryError'].forEach(c => ipcRenderer.removeAllListeners(c)),
+  cardQuery:                (prompt) => ipcRenderer.invoke('ai:cardQuery', { prompt }),
+  cardQueryAbort:           ()       => ipcRenderer.invoke('ai:cardQueryAbort'),
+  onCardQueryToken:         (cb)     => ipcRenderer.on('ai:cardQueryToken',  (_e, t) => cb(t)),
+  onCardQueryResult:        (cb)     => ipcRenderer.on('ai:cardQueryResult', (_e, d) => cb(d)),
+  onCardQueryDone:          (cb)     => ipcRenderer.on('ai:cardQueryDone',   ()      => cb()),
+  onCardQueryError:         (cb)     => ipcRenderer.on('ai:cardQueryError',  (_e, e) => cb(e)),
+  removeCardQueryListeners: ()       => ['ai:cardQueryToken', 'ai:cardQueryResult', 'ai:cardQueryDone', 'ai:cardQueryError'].forEach(c => ipcRenderer.removeAllListeners(c)),
 });
 
 contextBridge.exposeInMainWorld('arsenalAPI', {
@@ -101,6 +118,7 @@ contextBridge.exposeInMainWorld('cardsAPI', {
   getCardImages:          (args) => ipcRenderer.invoke('cards:getCardImages', args),
   getCardsBatch:          (args) => ipcRenderer.invoke('cards:getCardsBatch', args),
   getCardsByNames:        (args) => ipcRenderer.invoke('cards:getCardsByNames', args),
+  getCardsByNamesLight:   (args) => ipcRenderer.invoke('cards:getCardsByNamesLight', args),
   getRoleTags:            (args) => ipcRenderer.invoke('cards:getRoleTags', args),
   searchByRole:           (args) => ipcRenderer.invoke('cards:searchByRole', args),
   fetchEdhrecData:        (args) => ipcRenderer.invoke('cards:fetchEdhrecData', args),

@@ -238,23 +238,37 @@ export function Collection() {
 
   // Bulk import from pasted card list (e.g. "4 Lightning Bolt\n1 Sol Ring")
   const handleBulkImport = async () => {
-    const lines = bulkText.split('\n').map(l => l.trim()).filter(Boolean);
     const skipped: string[] = [];
     let added = 0;
     setBulkImporting(true);
-    for (const line of lines) {
+
+    // Parse all lines first
+    const parsed: { name: string; qty: number }[] = [];
+    for (const line of bulkText.split('\n').map(l => l.trim()).filter(Boolean)) {
       const m = line.match(/^(\d+)[x×]?\s+(.+)$/i) || line.match(/^()(.+)$/);
       if (!m) { skipped.push(line); continue; }
-      const qty = parseInt(m[1]) || 1;
-      const name = m[2].trim();
+      parsed.push({ name: m[2].trim(), qty: parseInt(m[1]) || 1 });
+    }
+
+    // Resolve all card names in a single DB round-trip
+    const names = parsed.map(p => p.name);
+    const resolved = await window.cardsAPI.getCardsByNamesLight({ names });
+    const nameToOracleId = new Map(resolved.map(r => [r.name.toLowerCase(), r.oracle_id]));
+
+    // Insert all matched cards in parallel, skipping unresolved names
+    const newCardNames: Record<string, string> = {};
+    await Promise.allSettled(parsed.map(async ({ name, qty }) => {
+      const oracleId = nameToOracleId.get(name.toLowerCase());
+      if (!oracleId) { skipped.push(name); return; }
       try {
-        const results = await window.cardsAPI.search({ q: name, searchIn: 'name', pageSize: 1 });
-        const card = results?.cards?.[0];
-        if (!card) { skipped.push(name); continue; }
-        await window.libraryAPI.addToCollection({ oracleId: card.oracle_id, quantity: qty, condition: 'NM', foil: false, acquiredPrice: null });
+        await window.libraryAPI.addToCollection({ oracleId, quantity: qty, condition: 'NM', foil: false, acquiredPrice: null });
+        newCardNames[oracleId] = resolved.find(r => r.oracle_id === oracleId)?.name ?? name;
         added++;
-        setCardNames(prev => ({ ...prev, [card.oracle_id]: card.name }));
       } catch { skipped.push(name); }
+    }));
+
+    if (Object.keys(newCardNames).length > 0) {
+      setCardNames(prev => ({ ...prev, ...newCardNames }));
     }
     setBulkResult({ added, skipped });
     setBulkImporting(false);

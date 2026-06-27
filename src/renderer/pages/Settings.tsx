@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { ArsenalPanel } from '../components/ArsenalPanel';
+import { ClaudeStatusWidget } from '../components/ai/ClaudeStatusWidget';
 
 export function Settings() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -102,6 +103,30 @@ export function Settings() {
                   <span className="material-symbols-outlined text-[14px]">shield</span>
                   Managed by Arsenal — install or update via the Arsenal panel below.
                 </p>
+              </div>
+
+              {/* AI Assistant */}
+              <div className="bg-surface border border-white/5 rounded-2xl p-6 shadow-xl space-y-5">
+                <h3 className="font-headline-md text-base text-on-surface">AI Assistant</h3>
+
+                <div>
+                  <label className="text-label-sm text-on-surface-variant/60 uppercase tracking-wider mb-1.5 block">Provider</label>
+                  <select
+                    value={((settings as any).ai?.provider as string) || 'claude-cli'}
+                    onChange={async e => {
+                      const provider = e.target.value;
+                      setSettings(s => ({ ...s, ai: { ...((s as any).ai ?? {}), provider } }));
+                      await window.settingsAPI.set({ ai: { ...((settings as any).ai ?? {}), provider } });
+                      await window.aiAPI.resetProvider();
+                    }}
+                    className="bg-surface-container/50 border border-white/10 rounded-lg py-2.5 px-4 text-body-md focus:outline-none focus:border-primary/50 transition-all"
+                  >
+                    <option value="claude-cli">Claude Code (local)</option>
+                    <option value="openai" disabled>OpenAI (coming soon)</option>
+                  </select>
+                </div>
+
+                <ClaudeStatusWidget />
               </div>
 
               {/* Arsenal MCP servers */}

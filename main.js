@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const http = require('http');
 const path = require('path');
 const { initLibrary } = require('./db/library');
 const { initCards } = require('./db/cards');
@@ -18,6 +19,63 @@ const log = createModuleLogger('main');
 let mainWindow = null;
 let libraryDb = null;
 let cardsDb = null;
+
+// ── Chat controller HTTP bridge ────────────────────────────────────────────────
+// The chat-controller MCP subprocess cannot call ipcMain directly.
+// We expose a localhost HTTP server so it can push UI events to the renderer.
+
+function startChatBridge() {
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      if (req.method !== 'POST') { res.writeHead(405).end(); return; }
+
+      let body = '';
+      req.on('data', d => { body += d; });
+      req.on('end', () => {
+        let payload;
+        try { payload = JSON.parse(body); } catch {
+          res.writeHead(400).end('{"error":"invalid json"}');
+          return;
+        }
+
+        if (req.url === '/emit') {
+          // Fire-and-forget: push event to renderer
+          mainWindow?.webContents.send('ai:block', payload.event);
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}');
+
+        } else if (req.url === '/ask') {
+          // Long-poll: hold open until renderer responds or timeout
+          const { event, requestId } = payload;
+          if (!requestId) { res.writeHead(400).end('{"error":"missing requestId"}'); return; }
+
+          mainWindow?.webContents.send('ai:ask', { ...event, requestId });
+
+          const timeout = setTimeout(() => {
+            if (!res.writableEnded) res.writeHead(408).end('{"error":"timeout"}');
+          }, 300_000);
+
+          ipcMain.once(`ai:askResponse:${requestId}`, (_, value) => {
+            clearTimeout(timeout);
+            if (!res.writableEnded) {
+              res.writeHead(200, { 'Content-Type': 'application/json' })
+                .end(JSON.stringify({ value }));
+            }
+          });
+
+        } else {
+          res.writeHead(404).end();
+        }
+      });
+    });
+
+    // Bind only to loopback — never expose to the network
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      log.info(`Chat bridge HTTP server listening on 127.0.0.1:${port}`);
+      resolve(port);
+    });
+  });
+}
 
 function createWindow() {
   log.info('Creating BrowserWindow');
@@ -55,7 +113,7 @@ function createWindow() {
 
 app.name = 'Karn Forge';
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const userDir = resolveUserDir();
 
   // Logger must be initialized before anything else so all subsequent logs go to file
@@ -88,7 +146,7 @@ app.whenReady().then(() => {
   log.info('Registering IPC handlers');
   registerLibraryHandlers(ipcMain, () => libraryDb);
   registerCardsHandlers(ipcMain, () => cardsDb, () => mainWindow);
-  registerAIHandlers(ipcMain, () => libraryDb);
+  registerAIHandlers(ipcMain, () => libraryDb, () => getSettings(userDir));
 
   ipcMain.handle('settings:get', () => getSettings(userDir));
   ipcMain.handle('settings:set', (_, updates) => setSettings(userDir, updates));
@@ -104,9 +162,11 @@ app.whenReady().then(() => {
   arsenal.registerIpcHandlers(ipcMain);
   log.info('All IPC handlers registered');
 
-  // Register arsenal + karnforge MCP servers in .claude/settings.json so
-  // Claude spawns them on-demand via stdio (their native transport).
-  writeClaudeMcpSettings(arsenal);
+  // Start chat bridge before writing MCP settings so the port is known
+  const chatBridgePort = await startChatBridge();
+
+  // Register arsenal + karnforge + chat-controller MCP servers in .claude/settings.json
+  writeClaudeMcpSettings(arsenal, { chatBridgePort });
 
   createWindow();
 });

@@ -5,8 +5,6 @@ interface ArsenalStatus {
   version: string | null;
   cardsDbVersion: string | null;
   rulesDbVersion: string | null;
-  rulesInstalled: boolean;
-  cardsInstalled: boolean;
 }
 
 interface ComponentUpdate {
@@ -35,7 +33,7 @@ export function ArsenalPanel() {
       const s = await window.arsenalAPI.getStatus();
       setStatus(s);
     } catch {
-      setStatus({ installed: false, version: null, cardsDbVersion: null, rulesDbVersion: null, rulesInstalled: false, cardsInstalled: false });
+      setStatus({ installed: false, version: null, cardsDbVersion: null, rulesDbVersion: null });
     }
   }, []);
 
@@ -46,11 +44,9 @@ export function ArsenalPanel() {
   }, [refreshStatus]);
 
   useEffect(() => {
-    window.arsenalAPI.onProgress(({ component, pct }) => {
-      if (component === downloading || downloading === null) setProgress(pct);
-    });
+    window.arsenalAPI.onProgress(({ pct }) => setProgress(pct));
     return () => window.arsenalAPI.removeListeners();
-  }, [downloading]);
+  }, []);
 
   const handleCheckUpdates = async () => {
     setIsChecking(true);
@@ -184,8 +180,7 @@ export function ArsenalPanel() {
       {/* MCP server status */}
       <div className="bg-surface-container/40 rounded-xl p-4 border border-white/5 space-y-2.5">
         <p className="text-[10px] uppercase tracking-widest text-on-surface-variant/40 font-bold mb-3">MCP Servers</p>
-        <ServerDot installed={status?.rulesInstalled ?? false} label="Rules MCP" />
-        <ServerDot installed={status?.cardsInstalled ?? false} label="Cards MCP" />
+        <ServerDot installed={status?.installed ?? false} label="Karn MCP" />
       </div>
 
       {/* Component version rows */}

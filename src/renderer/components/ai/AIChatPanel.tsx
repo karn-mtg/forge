@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { marked } from 'marked';
 import { useAIStore } from '../../store/useAIStore';
+import type { ChatEvent } from '../../../shared/chat-events';
+import { useAIContext } from '../../hooks/useAIContext';
+import { ConversationPicker } from './ConversationPicker';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 
@@ -62,7 +66,10 @@ function SetupBanner({ status, version }: SetupBannerProps) {
 }
 
 export function AIChatPanel() {
-  const { isOpen, close, messages, isStreaming, streamingText, sendMessage, abort, clearHistory } = useAIStore();
+  const { isOpen, close, messages, isStreaming, streamingText, sendMessage, abort, pushMessage } = useAIStore();
+  const context = useAIContext();
+  const location = useLocation();
+  const currentDeckId = (() => { const m = location.pathname.match(/^\/deck\/(\d+)/); return m ? parseInt(m[1], 10) : undefined; })();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatus>('checking');
   const [claudeVersion, setClaudeVersion] = useState<string | null>(null);
@@ -82,6 +89,18 @@ export function AIChatPanel() {
       }
     }).catch(() => setSetupStatus('not_installed'));
   }, [isOpen]);
+
+  // Subscribe to chat-controller block events
+  useEffect(() => {
+    const handleBlock = (event: ChatEvent) => {
+      pushMessage({ id: crypto.randomUUID(), role: 'block', event });
+      // Accumulate blocks for this turn in the store
+      useAIStore.setState(s => ({ currentTurnBlocks: [...s.currentTurnBlocks, event] }));
+    };
+    window.aiAPI.onBlock(handleBlock);
+    window.aiAPI.onAsk(handleBlock);
+    return () => window.aiAPI.removeBlockListeners();
+  }, [pushMessage]);
 
   // Auto-scroll when new content arrives
   useEffect(() => {
@@ -105,44 +124,30 @@ export function AIChatPanel() {
       }}
     >
       {/* Header */}
-      <div
-        className="flex items-center justify-between px-4 py-3 flex-shrink-0"
-        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
-      >
-        <div className="flex items-center gap-2">
-          <span
-            className="material-symbols-outlined text-[18px]"
-            style={{ color: '#f2ca83', fontVariationSettings: "'FILL' 1" }}
-          >
-            auto_awesome
-          </span>
-          <span className="text-sm font-semibold" style={{ color: '#f2ca83' }}>Karn AI</span>
-          <span
-            className="text-xs px-2 py-0.5 rounded-full"
-            style={{ background: 'rgba(242,202,131,0.1)', color: '#a08050', border: '1px solid rgba(242,202,131,0.15)' }}
-          >
-            Claude Code
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          {messages.length > 0 && (
+      <div className="flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span
+              className="material-symbols-outlined text-[18px]"
+              style={{ color: '#f2ca83', fontVariationSettings: "'FILL' 1" }}
+            >
+              auto_awesome
+            </span>
+            <span className="text-sm font-semibold" style={{ color: '#f2ca83' }}>Karn AI</span>
+          </div>
+          <div className="flex items-center gap-1">
             <button
-              onClick={clearHistory}
+              onClick={close}
               className="flex items-center justify-center w-7 h-7 rounded-lg transition-all hover:bg-white/5"
               style={{ color: '#666' }}
-              title="Clear conversation"
+              title="Close"
             >
-              <span className="material-symbols-outlined text-[16px]">delete_sweep</span>
+              <span className="material-symbols-outlined text-[18px]">close</span>
             </button>
-          )}
-          <button
-            onClick={close}
-            className="flex items-center justify-center w-7 h-7 rounded-lg transition-all hover:bg-white/5"
-            style={{ color: '#666' }}
-            title="Close"
-          >
-            <span className="material-symbols-outlined text-[18px]">close</span>
-          </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 px-4 pb-2">
+          <ConversationPicker currentDeckId={currentDeckId} />
         </div>
       </div>
 
@@ -210,7 +215,7 @@ export function AIChatPanel() {
       )}
 
       {/* Input — disabled until setup is confirmed ready */}
-      <ChatInput onSend={sendMessage} disabled={isStreaming || !isReady} />
+      <ChatInput onSend={(text) => sendMessage(text, context)} disabled={isStreaming || !isReady} />
     </div>
   );
 }

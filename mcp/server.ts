@@ -208,10 +208,13 @@ server.tool(
 
 server.tool(
   'delete_deck',
-  'Permanently delete a deck and all its cards.',
-  { id: z.number().int().positive() },
+  'Permanently and irreversibly delete a deck and all its cards. You MUST set confirm to true to proceed; omitting it or passing false will do nothing.',
+  {
+    id:      z.number().int().positive(),
+    confirm: z.literal(true).describe('Must be explicitly true — prevents accidental deletion'),
+  },
   async (args) => {
-    try { return ok(lib.deleteDeck(libDb, args)); } catch (e) { return err(e); }
+    try { return ok(lib.deleteDeck(libDb, { id: args.id })); } catch (e) { return err(e); }
   }
 );
 
@@ -415,6 +418,108 @@ server.resource(
   async (uri, { id }) => {
     const deck = lib.getDeck(libDb, { id: Number(id) });
     return resourceContent(uri.href, deck);
+  }
+);
+
+// ── Canvas helpers ────────────────────────────────────────────────────────────
+
+function loadCanvas(arrangementId: number): Record<string, unknown> {
+  const row = lib.loadArrangementCanvas(libDb, { id: arrangementId });
+  if (!row?.canvas_json) return {};
+  return JSON.parse(row.canvas_json) as Record<string, unknown>;
+}
+
+// ── Arrangement tools ─────────────────────────────────────────────────────────
+
+server.tool(
+  'get_arrangements',
+  'List all named canvas arrangements for a deck.',
+  { deckId: z.number().int().positive().describe('Deck ID') },
+  async (args) => { try { return ok(lib.getArrangements(libDb, args)); } catch(e) { return err(e); } }
+);
+
+server.tool(
+  'create_arrangement',
+  'Create a new named arrangement (visual canvas layout) for a deck. Returns the new arrangement id.',
+  {
+    deckId: z.number().int().positive().describe('Deck ID'),
+    name:   z.string().min(1).max(100).optional().default('New Arrangement').describe('Arrangement name'),
+  },
+  async (args) => { try { return ok(lib.createArrangement(libDb, args)); } catch(e) { return err(e); } }
+);
+
+server.tool(
+  'get_arrangement_canvas',
+  'Get the canvas JSON for a specific arrangement (card positions, groups, stickers). Read before writing.',
+  { id: z.number().int().positive().describe('Arrangement ID') },
+  async ({ id }) => {
+    try {
+      const row = lib.loadArrangementCanvas(libDb, { id });
+      return ok({ id, canvasJson: row?.canvas_json ?? null });
+    } catch(e) { return err(e); }
+  }
+);
+
+server.tool(
+  'save_arrangement_canvas',
+  'Replace the canvas JSON for an arrangement. Always call get_arrangement_canvas first, modify, then save.',
+  {
+    id:         z.number().int().positive().describe('Arrangement ID'),
+    canvasJson: z.string().describe('Full canvas JSON string'),
+  },
+  async (args) => { try { return ok(lib.saveArrangementCanvas(libDb, args)); } catch(e) { return err(e); } }
+);
+
+// ── Print selection ───────────────────────────────────────────────────────────
+
+server.tool(
+  'update_card_print',
+  'Change which printing (set/art) is used for a card in a deck by updating its scryfall_id. Use get_deck to find the deck_cards row id.',
+  {
+    id:         z.number().int().positive().describe('deck_cards row id (NOT oracle_id)'),
+    scryfallId: z.string().describe('Scryfall printing ID for the desired edition'),
+  },
+  async (args) => { try { return ok(lib.updateCardPrint(libDb, args)); } catch(e) { return err(e); } }
+);
+
+// ── Canvas group / sticker helpers ────────────────────────────────────────────
+
+server.tool(
+  'create_canvas_group',
+  'Add a named group of cards to an arrangement canvas. The group will appear as a labeled section in DeckView.',
+  {
+    arrangementId: z.number().int().positive().describe('Arrangement ID'),
+    name:          z.string().min(1).max(100).describe('Group label'),
+    oracleIds:     z.array(z.string()).min(1).describe('oracle_id strings for cards to include'),
+    color:         z.string().optional().default('#4a9eff').describe('Group accent color (CSS hex)'),
+  },
+  async ({ arrangementId, name, oracleIds, color }) => {
+    try {
+      const canvas = loadCanvas(arrangementId);
+      canvas.groups = (canvas.groups as unknown[] | undefined) ?? [];
+      (canvas.groups as unknown[]).push({ id: crypto.randomUUID(), name, color, oracleIds });
+      lib.saveArrangementCanvas(libDb, { id: arrangementId, canvasJson: JSON.stringify(canvas) });
+      return ok({ ok: true, groupCount: (canvas.groups as unknown[]).length });
+    } catch(e) { return err(e); }
+  }
+);
+
+server.tool(
+  'create_canvas_sticker',
+  'Add a text sticker/label to an arrangement canvas.',
+  {
+    arrangementId: z.number().int().positive().describe('Arrangement ID'),
+    text:          z.string().min(1).max(500).describe('Sticker text content (supports Markdown)'),
+    color:         z.string().optional().default('#f2ca83').describe('Sticker background color (CSS hex)'),
+  },
+  async ({ arrangementId, text, color }) => {
+    try {
+      const canvas = loadCanvas(arrangementId);
+      canvas.stickers = (canvas.stickers as unknown[] | undefined) ?? [];
+      (canvas.stickers as unknown[]).push({ id: crypto.randomUUID(), text, color, x: 100, y: 100 });
+      lib.saveArrangementCanvas(libDb, { id: arrangementId, canvasJson: JSON.stringify(canvas) });
+      return ok({ ok: true, stickerCount: (canvas.stickers as unknown[]).length });
+    } catch(e) { return err(e); }
   }
 );
 
