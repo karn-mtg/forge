@@ -108,8 +108,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "icon.png",
-      "installerHeaderIcon": "icon.png"
+      "installerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico"
     },
     "publish": {
       "provider": "github",
