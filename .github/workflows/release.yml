@@ -4,10 +4,8 @@ on:
   push:
     tags: ['v*']
 
-# ── CONFIGURE THIS ────────────────────────────────────────────────────────────
 env:
-  ARSENAL_REPO: YOUR_GITHUB_USERNAME/karn   # e.g. jdoe/karn
-# ─────────────────────────────────────────────────────────────────────────────
+  ARSENAL_REPO: karn-mtg/karn
 
 jobs:
   build:
@@ -41,13 +39,20 @@ jobs:
       - name: Download latest karn-arsenal release
         shell: bash
         run: |
-          # Get latest karn-arsenal release asset URL
-          ASSET_URL=$(curl -s https://api.github.com/repos/${{ env.ARSENAL_REPO }}/releases/latest \
-            | python3 -c "import sys,json; data=json.load(sys.stdin); \
-              assets=[a for a in data['assets'] if '${{ matrix.arsenal_platform }}' in a['name']]; \
-              print(assets[0]['browser_download_url'] if assets else '')")
+          # Find the latest server-v* release specifically (not agent/cards/rules releases)
+          ASSET_URL=$(curl -s https://api.github.com/repos/${{ env.ARSENAL_REPO }}/releases \
+            | python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+server = next((r for r in releases if r['tag_name'].startswith('server-v') and not r['draft'] and not r['prerelease']), None)
+if not server:
+    print('')
+else:
+    assets = [a for a in server['assets'] if '${{ matrix.arsenal_platform }}' in a['name']]
+    print(assets[0]['browser_download_url'] if assets else '')
+")
           if [ -z "$ASSET_URL" ]; then
-            echo "No karn-arsenal asset found for ${{ matrix.arsenal_platform }}, using empty resources"
+            echo "No karn-arsenal asset found for ${{ matrix.arsenal_platform }}, skipping bundled server"
           else
             curl -L "$ASSET_URL" -o arsenal.zip
             unzip -o arsenal.zip -d resources/
