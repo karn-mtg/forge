@@ -114,7 +114,8 @@
     "publish": {
       "provider": "github",
       "owner": "karn-mtg",
-      "repo": "forge"
+      "repo": "forge",
+      "releaseType": "release"
     }
   }
 }
