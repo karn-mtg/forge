@@ -36,6 +36,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.10.0",
+    "electron-updater": "^6.8.9",
     "mana-font": "^1.18.0",
     "marked": "^18.0.4",
     "react": "^19.2.6",
@@ -109,6 +110,11 @@
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "icon.png",
       "installerHeaderIcon": "icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "karn-mtg",
+      "repo": "forge"
     }
   }
 }

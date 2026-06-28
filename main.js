@@ -1,6 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const http = require('http');
 const path = require('path');
 const { initLibrary } = require('./db/library');
@@ -111,6 +112,45 @@ function createWindow() {
   mainWindow.on('closed', () => { log.info('Window closed'); mainWindow = null; });
 }
 
+function setupAutoUpdater() {
+  const isDev = process.env.NODE_ENV === 'development';
+  if (isDev) return;
+
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+
+  autoUpdater.on('update-available', (info) => {
+    log.info('forge update available', info.version);
+    mainWindow?.webContents.send('forge:updateAvailable', { version: info.version });
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    log.info('forge update not available');
+    mainWindow?.webContents.send('forge:updateNotAvailable');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    mainWindow?.webContents.send('forge:updateProgress', Math.round(progress.percent));
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    log.info('forge update downloaded', info.version);
+    mainWindow?.webContents.send('forge:updateReady', { version: info.version });
+  });
+
+  autoUpdater.on('error', (err) => {
+    log.error('forge auto-updater error', err.message);
+    mainWindow?.webContents.send('forge:updateError', err.message);
+  });
+
+  ipcMain.handle('forge:checkForUpdate', () => autoUpdater.checkForUpdates());
+  ipcMain.handle('forge:downloadUpdate', () => autoUpdater.downloadUpdate());
+  ipcMain.handle('forge:installUpdate',  () => { autoUpdater.quitAndInstall(); });
+
+  // Check silently 5 seconds after launch so the window is ready to receive the event
+  setTimeout(() => autoUpdater.checkForUpdates(), 5000);
+}
+
 app.name = 'Karn Forge';
 
 app.whenReady().then(async () => {
@@ -148,6 +188,7 @@ app.whenReady().then(async () => {
   registerCardsHandlers(ipcMain, () => cardsDb, () => mainWindow);
   registerAIHandlers(ipcMain, () => libraryDb, () => getSettings(userDir));
 
+  ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('settings:get', () => getSettings(userDir));
   ipcMain.handle('settings:set', (_, updates) => setSettings(userDir, updates));
   ipcMain.handle('shell:openUserData', () => shell.openPath(userDir));
@@ -159,16 +200,21 @@ app.whenReady().then(async () => {
     }
   });
 
-  arsenal.registerIpcHandlers(ipcMain);
-  log.info('All IPC handlers registered');
-
   // Start chat bridge before writing MCP settings so the port is known
   const chatBridgePort = await startChatBridge();
 
+  // Reusable: called at startup and again after any install/update so Claude
+  // always finds the latest binary path without restarting the app.
+  const rewriteMcpSettings = () => writeClaudeMcpSettings(arsenal, { chatBridgePort });
+
+  arsenal.registerIpcHandlers(ipcMain, rewriteMcpSettings);
+  log.info('All IPC handlers registered');
+
   // Register arsenal + karnforge + chat-controller MCP servers in .claude/settings.json
-  writeClaudeMcpSettings(arsenal, { chatBridgePort });
+  rewriteMcpSettings();
 
   createWindow();
+  setupAutoUpdater();
 });
 
 app.on('window-all-closed', () => {

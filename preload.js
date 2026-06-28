@@ -106,9 +106,30 @@ contextBridge.exposeInMainWorld('arsenalAPI', {
   checkAllForUpdates:  ()                    => ipcRenderer.invoke('arsenal:checkAllForUpdates'),
   downloadUpdate:      (version)             => ipcRenderer.invoke('arsenal:downloadUpdate', version),
   downloadDbUpdate:    (component, version)  => ipcRenderer.invoke('arsenal:downloadDbUpdate', component, version),
+  installAll:          ()                    => ipcRenderer.invoke('arsenal:installAll'),
   restart:             ()                    => ipcRenderer.invoke('arsenal:restart'),
-  onProgress:          (cb)                  => ipcRenderer.on('arsenal:progress', (_e, data) => cb(data)),
-  removeListeners:     ()                    => ipcRenderer.removeAllListeners('arsenal:progress'),
+  onProgress:          (cb)                  => ipcRenderer.on('arsenal:progress',      (_e, data) => cb(data)),
+  onSetupProgress:     (cb)                  => ipcRenderer.on('arsenal:setupProgress', (_e, data) => cb(data)),
+  removeListeners:     ()                    => {
+    ipcRenderer.removeAllListeners('arsenal:progress');
+    ipcRenderer.removeAllListeners('arsenal:setupProgress');
+  },
+});
+
+contextBridge.exposeInMainWorld('forgeUpdateAPI', {
+  getVersion:         ()    => ipcRenderer.invoke('app:getVersion'),
+  checkForUpdate:     ()    => ipcRenderer.invoke('forge:checkForUpdate'),
+  downloadUpdate:     ()    => ipcRenderer.invoke('forge:downloadUpdate'),
+  installUpdate:      ()    => ipcRenderer.invoke('forge:installUpdate'),
+  onUpdateAvailable:  (cb)  => ipcRenderer.on('forge:updateAvailable',  (_e, info) => cb(info)),
+  onUpdateNotAvailable: (cb)=> ipcRenderer.on('forge:updateNotAvailable', () => cb()),
+  onDownloadProgress: (cb)  => ipcRenderer.on('forge:updateProgress',   (_e, pct)  => cb(pct)),
+  onUpdateReady:      (cb)  => ipcRenderer.on('forge:updateReady',      (_e, info) => cb(info)),
+  onError:            (cb)  => ipcRenderer.on('forge:updateError',      (_e, msg)  => cb(msg)),
+  removeListeners:    ()    => {
+    ['forge:updateAvailable', 'forge:updateNotAvailable', 'forge:updateProgress', 'forge:updateReady', 'forge:updateError']
+      .forEach(c => ipcRenderer.removeAllListeners(c));
+  },
 });
 
 contextBridge.exposeInMainWorld('cardsAPI', {

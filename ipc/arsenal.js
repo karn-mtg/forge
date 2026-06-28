@@ -313,10 +313,43 @@ class ArsenalManager {
   }
 
   /**
+   * One-shot first-run install: downloads server binary + cards DB + rules DB in sequence.
+   * Calls onProgress({ phase, pct }) where pct is 0-100 within each phase.
+   */
+  async installAll(onProgress) {
+    const emit = (phase, pct) => { if (typeof onProgress === 'function') onProgress({ phase, pct }); };
+
+    log.info('arsenal:installAll — fetching latest versions');
+    const [serverVersion, cardsVersion, rulesVersion] = await Promise.all([
+      this._fetchLatestByPrefix(TAG_PREFIXES.server),
+      this._fetchLatestByPrefix(TAG_PREFIXES.cards),
+      this._fetchLatestByPrefix(TAG_PREFIXES.rules),
+    ]);
+
+    if (!serverVersion) throw new Error('Could not fetch latest server version from GitHub.');
+    if (!cardsVersion)  throw new Error('Could not fetch latest cards DB version from GitHub.');
+    if (!rulesVersion)  throw new Error('Could not fetch latest rules DB version from GitHub.');
+
+    log.info(`arsenal:installAll server=${serverVersion} cards=${cardsVersion} rules=${rulesVersion}`);
+
+    emit('server', 0);
+    await this.downloadUpdate(serverVersion, (pct) => emit('server', pct));
+
+    emit('cards', 0);
+    await this.downloadDbUpdate('cards', cardsVersion, (pct) => emit('cards', pct));
+
+    emit('rules', 0);
+    await this.downloadDbUpdate('rules', rulesVersion, (pct) => emit('rules', pct));
+
+    log.info('arsenal:installAll complete');
+  }
+
+  /**
    * Registers all IPC handlers.
    * @param {import('electron').IpcMain} ipcMainRef
+   * @param {() => void} [onInstallComplete] - Called after a successful install to rewrite MCP settings
    */
-  registerIpcHandlers(ipcMainRef) {
+  registerIpcHandlers(ipcMainRef, onInstallComplete) {
     ipcMainRef.handle('arsenal:getStatus', () => this.getStatus());
 
     // Server update
@@ -325,6 +358,7 @@ class ArsenalManager {
       await this.downloadUpdate(version, (pct) => {
         if (!event.sender.isDestroyed()) event.sender.send('arsenal:progress', { component: 'server', pct });
       });
+      if (typeof onInstallComplete === 'function') onInstallComplete();
     });
 
     // DB updates (cards / rules)
@@ -338,7 +372,19 @@ class ArsenalManager {
     // Check all three at once
     ipcMainRef.handle('arsenal:checkAllForUpdates', () => this.checkAllForUpdates());
 
-    ipcMainRef.handle('arsenal:restart', () => this.getStatus());
+    // First-run one-click install: server + cards + rules
+    ipcMainRef.handle('arsenal:installAll', async (event) => {
+      await this.installAll(({ phase, pct }) => {
+        if (!event.sender.isDestroyed()) event.sender.send('arsenal:setupProgress', { phase, pct });
+      });
+      if (typeof onInstallComplete === 'function') onInstallComplete();
+    });
+
+    // Refresh status (and rewrite MCP settings so Claude picks up a newly installed binary)
+    ipcMainRef.handle('arsenal:restart', () => {
+      if (typeof onInstallComplete === 'function') onInstallComplete();
+      return this.getStatus();
+    });
   }
 }
 

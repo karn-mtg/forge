@@ -257,8 +257,10 @@ declare global {
       }>;
       downloadUpdate(version: string): Promise<void>;
       downloadDbUpdate(component: 'cards' | 'rules', version: string): Promise<void>;
+      installAll(): Promise<void>;
       restart(): Promise<void>;
-      onProgress(cb: (data: { component: 'server' | 'cards' | 'rules'; pct: number }) => void): void;
+      onProgress(cb: (data: { pct: number }) => void): void;
+      onSetupProgress(cb: (data: { phase: 'server' | 'cards' | 'rules'; pct: number }) => void): void;
       removeListeners(): void;
     };
     cardsAPI: {

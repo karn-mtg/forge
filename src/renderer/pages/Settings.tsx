@@ -1,7 +1,137 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { ArsenalPanel } from '../components/ArsenalPanel';
 import { ClaudeStatusWidget } from '../components/ai/ClaudeStatusWidget';
+
+type ForgeUpdateState =
+  | { phase: 'idle' }
+  | { phase: 'checking' }
+  | { phase: 'available'; version: string }
+  | { phase: 'downloading'; pct: number }
+  | { phase: 'ready'; version: string }
+  | { phase: 'upToDate' }
+  | { phase: 'error'; message: string };
+
+function ForgeUpdatePanel() {
+  const [appVersion, setAppVersion] = useState('—');
+  const [state, setState] = useState<ForgeUpdateState>({ phase: 'idle' });
+
+  useEffect(() => {
+    window.forgeUpdateAPI.getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    window.forgeUpdateAPI.onUpdateAvailable(({ version }) =>
+      setState({ phase: 'available', version }));
+    window.forgeUpdateAPI.onUpdateNotAvailable(() =>
+      setState({ phase: 'upToDate' }));
+    window.forgeUpdateAPI.onDownloadProgress((pct) =>
+      setState({ phase: 'downloading', pct }));
+    window.forgeUpdateAPI.onUpdateReady(({ version }) =>
+      setState({ phase: 'ready', version }));
+    window.forgeUpdateAPI.onError((message) =>
+      setState({ phase: 'error', message }));
+    return () => window.forgeUpdateAPI.removeListeners();
+  }, []);
+
+  const handleCheck = useCallback(async () => {
+    setState({ phase: 'checking' });
+    try {
+      await window.forgeUpdateAPI.checkForUpdate();
+    } catch {
+      setState({ phase: 'error', message: 'Failed to check for updates.' });
+    }
+  }, []);
+
+  const handleDownload = useCallback(async () => {
+    setState({ phase: 'downloading', pct: 0 });
+    try {
+      await window.forgeUpdateAPI.downloadUpdate();
+    } catch {
+      setState({ phase: 'error', message: 'Download failed.' });
+    }
+  }, []);
+
+  return (
+    <div className="bg-surface border border-white/5 rounded-2xl p-6 shadow-xl space-y-5">
+      <div className="flex items-center justify-between">
+        <h3 className="font-headline-md text-base text-on-surface">Karn Forge</h3>
+        <span className="text-[11px] font-bold text-on-surface-variant/50 bg-surface-container/60 border border-white/10 rounded-full px-2 py-0.5">
+          v{appVersion}
+        </span>
+      </div>
+
+      <div className="bg-surface-container/40 rounded-xl p-4 border border-white/5 flex items-center justify-between gap-3">
+        <span className="text-body-sm text-on-surface-variant">App</span>
+
+        <div className="shrink-0">
+          {state.phase === 'upToDate' && (
+            <span className="flex items-center gap-1 text-[11px] text-green-400/60">
+              <span className="material-symbols-outlined text-[13px]">check_circle</span>
+              Up to date
+            </span>
+          )}
+          {state.phase === 'checking' && (
+            <span className="flex items-center gap-1 text-[11px] text-primary/70">
+              <span className="material-symbols-outlined text-[13px] animate-spin">sync</span>
+              Checking…
+            </span>
+          )}
+          {state.phase === 'available' && (
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-1.5 px-3 py-1 bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 transition-all font-bold rounded-lg text-[11px]"
+            >
+              <span className="material-symbols-outlined text-[14px]">download</span>
+              v{state.version}
+            </button>
+          )}
+          {state.phase === 'downloading' && (
+            <span className="flex items-center gap-1 text-[11px] text-primary/70">
+              <span className="material-symbols-outlined text-[13px] animate-spin">sync</span>
+              {state.pct}%
+            </span>
+          )}
+          {state.phase === 'ready' && (
+            <button
+              onClick={() => window.forgeUpdateAPI.installUpdate()}
+              className="flex items-center gap-1.5 px-3 py-1 bg-green-500/20 text-green-400 border border-green-500/30 hover:bg-green-500/30 transition-all font-bold rounded-lg text-[11px]"
+            >
+              <span className="material-symbols-outlined text-[14px]">restart_alt</span>
+              Install v{state.version}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {state.phase === 'downloading' && (
+        <div>
+          <div className="text-[11px] text-on-surface-variant/40 mb-1.5">Downloading update…</div>
+          <div className="w-full h-1 bg-surface-container rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all duration-300"
+              style={{ width: state.pct > 0 ? `${state.pct}%` : '2%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {state.phase === 'error' && (
+        <p className="text-[12px] text-red-400/80">{state.message}</p>
+      )}
+
+      {(state.phase === 'idle' || state.phase === 'upToDate' || state.phase === 'error') && (
+        <button
+          onClick={handleCheck}
+          className="flex items-center gap-2 px-4 py-2 bg-surface-container border border-white/5 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all font-bold text-label-md"
+        >
+          <span className="material-symbols-outlined text-[18px]">system_update</span>
+          Check for Updates
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function Settings() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -128,6 +258,9 @@ export function Settings() {
 
                 <ClaudeStatusWidget />
               </div>
+
+              {/* Forge app updates */}
+              <ForgeUpdatePanel />
 
               {/* Arsenal MCP servers */}
               <ArsenalPanel />

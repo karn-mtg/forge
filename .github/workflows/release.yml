@@ -57,12 +57,7 @@ jobs:
       - name: Build Vite frontend
         run: npm run build
 
-      - name: Build Electron installer
-        run: npm run dist:${{ matrix.platform }}
+      - name: Build Electron installer and publish to GitHub Release
+        run: npx electron-builder --${{ matrix.platform }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist-electron/**/*.{exe,dmg,AppImage}
-          generate_release_notes: true

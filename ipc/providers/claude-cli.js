@@ -5,21 +5,24 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { createModuleLogger } = require('../../utils/logger');
+const { resolveArsenalDir } = require('../../utils/paths');
 
 const log = createModuleLogger('provider:claude-cli');
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
-const SYSTEM_PROMPT_PATH = path.resolve(
-  __dirname, '..', '..', '..', 'karn', 'agent', 'system-prompt.md'
-);
+// Installed agent dir (updated via update_component("agent"))
+const INSTALLED_AGENT_DIR = path.join(resolveArsenalDir(), 'agent');
+// Workspace source fallback for dev (karn submodule)
+const DEV_AGENT_DIR = path.resolve(__dirname, '..', '..', '..', 'karn', 'agent');
 
 function loadBaseSystemPrompt() {
-  try {
-    return fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
-  } catch {
-    log.warn('Karn agent system prompt not found — using empty prompt');
-    return '';
+  for (const dir of [INSTALLED_AGENT_DIR, DEV_AGENT_DIR]) {
+    try {
+      return fs.readFileSync(path.join(dir, 'system-prompt.md'), 'utf8');
+    } catch { /* try next */ }
   }
+  log.warn('Karn agent system prompt not found — using empty prompt');
+  return '';
 }
 
 function buildSystemPrompt(context) {
