@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish (e.g. v1.1.0)'
+        required: true
+        type: string
 
 env:
   ARSENAL_REPO: karn-mtg/karn
@@ -28,6 +34,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -66,3 +74,5 @@ else:
         run: npx electron-builder --${{ matrix.platform }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # When triggered via workflow_dispatch, tell electron-builder which release to upload to
+          GH_RELEASE_TAG: ${{ github.event.inputs.tag || '' }}
