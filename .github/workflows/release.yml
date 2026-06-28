@@ -48,22 +48,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p resources/arsenal
-          # Find the latest server-v* release specifically (not agent/cards/rules releases)
-          ASSET_URL=$(curl -sf https://api.github.com/repos/${{ env.ARSENAL_REPO }}/releases \
-            | python3 -c "
-import sys, json
-try:
-    releases = json.load(sys.stdin)
-    if not isinstance(releases, list):
-        print(''); exit(0)
-    server = next((r for r in releases if r['tag_name'].startswith('server-v') and not r['draft'] and not r['prerelease']), None)
-    if not server:
-        print(''); exit(0)
-    assets = [a for a in server['assets'] if '${{ matrix.arsenal_platform }}' in a['name']]
-    print(assets[0]['browser_download_url'] if assets else '')
-except Exception:
-    print('')
-" 2>/dev/null || echo "")
+          # Find the latest server-v* release and download the platform asset
+          ASSET_URL=$(curl -sf "https://api.github.com/repos/${{ env.ARSENAL_REPO }}/releases" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); s=next((r for r in (d if isinstance(d,list) else []) if str(r.get('tag_name','')).startswith('server-v') and not r.get('draft') and not r.get('prerelease')),None); a=[x for x in s.get('assets',[]) if '${{ matrix.arsenal_platform }}' in x.get('name','')] if s else []; print(a[0]['browser_download_url'] if a else '')" \
+            2>/dev/null || echo "")
           if [ -z "$ASSET_URL" ]; then
             echo "No karn-arsenal asset found for ${{ matrix.arsenal_platform }}, skipping bundled server"
           else
