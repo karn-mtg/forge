@@ -80,7 +80,7 @@
           ]
         }
       ],
-      "icon": "icon.png"
+      "icon": "icon.ico"
     },
     "mac": {
       "target": [
