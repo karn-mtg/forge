@@ -161,7 +161,12 @@ app.whenReady().then(async () => {
   log.info('App ready', { userDir, version: app.getVersion(), platform: process.platform });
 
   log.info('Initializing library DB');
-  libraryDb = initLibrary(userDir);
+  try {
+    libraryDb = initLibrary(userDir);
+  } catch (err) {
+    log.error('Library DB init failed', err.message, err.stack);
+    throw err;
+  }
   log.info('Library DB ready');
 
   const arsenal = new ArsenalManager();
