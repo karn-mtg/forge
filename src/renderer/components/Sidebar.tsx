@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import biglogoUrl from '../public/biglogo.png';
 import { TrafficLights } from './TrafficLights';
 import { FolderTree } from './FolderTree';
 import { NewDeckModal } from './NewDeckModal';
@@ -35,7 +36,7 @@ export function Sidebar() {
         <div className="px-4 flex-1 overflow-y-auto">
           {/* Logo */}
           <div className="flex items-center gap-3 mb-4 px-2">
-            <img src="/biglogo.png" alt="Karn Forge" className="w-[216px]" />
+            <img src={biglogoUrl} alt="Karn Forge" className="w-[216px]" />
           </div>
 
           <nav className="space-y-0.5">
