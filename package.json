@@ -1,7 +1,7 @@
 {
   "name": "karnforge",
   "productName": "Karn Forge",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Karn Forge – MTG Deck Builder & Library Manager",
   "main": "main.js",
   "scripts": {
