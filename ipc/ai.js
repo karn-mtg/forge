@@ -1,14 +1,13 @@
 'use strict';
 
 const { spawn }  = require('child_process');
-const path       = require('path');
+const os         = require('os');
 const providerRegistry = require('./providers/index');
 const { checkClaude }  = require('./providers/claude-cli');
 const lib              = require('../db/library');
 const { createModuleLogger } = require('../utils/logger');
 
 const log = createModuleLogger('ipc:ai');
-const PROJECT_ROOT = path.join(__dirname, '..');
 
 // card query subprocess is still stateless and claude-specific
 let cardQueryProc = null;
@@ -116,7 +115,7 @@ function registerAIHandlers(ipcMain, getLibDb, getSettings) {
       const fullPrompt = `${systemInstruction}\n\nUser request: ${prompt}`;
       const args = ['-p', fullPrompt, '--output-format', 'stream-json', '--verbose'];
 
-      cardQueryProc = spawn('claude', args, { shell: true, cwd: PROJECT_ROOT, env: { ...process.env } });
+      cardQueryProc = spawn('claude', args, { shell: true, cwd: os.homedir(), env: { ...process.env } });
 
       let buffer = '';
       let rawAccumulated = '';

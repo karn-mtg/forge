@@ -28,13 +28,13 @@
     "electron-builder": "^25.0.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "tsx": "^4.22.3",
     "typescript": "^6.0.3",
     "unzipper": "^0.12.3",
     "vite": "^8.0.14"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "tsx": "^4.22.3",
     "better-sqlite3": "^12.10.0",
     "electron-updater": "^6.8.9",
     "mana-font": "^1.18.0",
@@ -57,10 +57,20 @@
       "main.js",
       "preload.js",
       "settings.js",
+      "icon.png",
       "ipc/**/*",
       "db/**/*",
+      "utils/**/*",
+      "mcp/**/*",
       "node_modules/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "mcp/**/*",
+      "db/**/*",
+      "utils/**/*",
+      "ipc/**/*",
+      "node_modules/tsx/**/*"
     ],
     "extraResources": [
       {

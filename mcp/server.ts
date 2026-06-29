@@ -425,8 +425,8 @@ server.resource(
 
 function loadCanvas(arrangementId: number): Record<string, unknown> {
   const row = lib.loadArrangementCanvas(libDb, { id: arrangementId });
-  if (!row?.canvas_json) return {};
-  return JSON.parse(row.canvas_json) as Record<string, unknown>;
+  if (!row?.canvasJson) return {};
+  return JSON.parse(row.canvasJson) as Record<string, unknown>;
 }
 
 // ── Arrangement tools ─────────────────────────────────────────────────────────
@@ -455,7 +455,7 @@ server.tool(
   async ({ id }) => {
     try {
       const row = lib.loadArrangementCanvas(libDb, { id });
-      return ok({ id, canvasJson: row?.canvas_json ?? null });
+      return ok({ id, canvasJson: row?.canvasJson ?? null });
     } catch(e) { return err(e); }
   }
 );

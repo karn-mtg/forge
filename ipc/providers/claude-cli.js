@@ -8,7 +8,6 @@ const { createModuleLogger } = require('../../utils/logger');
 const { resolveArsenalDir } = require('../../utils/paths');
 
 const log = createModuleLogger('provider:claude-cli');
-const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
 // Installed agent dir (updated via update_component("agent"))
 const INSTALLED_AGENT_DIR = path.join(resolveArsenalDir(), 'agent');
@@ -72,7 +71,7 @@ class ClaudeCliProvider {
 
     const proc = spawn('claude', args, {
       shell: true,
-      cwd: PROJECT_ROOT,
+      cwd: os.homedir(),
       env: { ...process.env },
     });
     this._proc = proc;
