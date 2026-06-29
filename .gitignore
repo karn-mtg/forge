@@ -33,6 +33,7 @@ desktop.ini
 *.sw?
 
 # Electron packager / builder artifacts
+dist-electron/
 release/
 build/
 *.dmg
