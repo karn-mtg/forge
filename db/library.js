@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS collection (
   acquired_price_usd REAL,
   acquired_at TEXT,
   notes TEXT,
+  recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL,
   added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -95,7 +96,6 @@ CREATE INDEX IF NOT EXISTS idx_wishlist_oracle_id          ON wishlist (oracle_i
 CREATE INDEX IF NOT EXISTS idx_activity_log_deck_id        ON activity_log (deck_id);
 CREATE INDEX IF NOT EXISTS idx_collection_added_at         ON collection (added_at DESC);
 CREATE INDEX IF NOT EXISTS idx_wishlist_sort               ON wishlist (priority DESC, added_at DESC);
-CREATE INDEX IF NOT EXISTS idx_collection_owner_oracle     ON collection (oracle_id, recipient_id, scryfall_id);
 CREATE INDEX IF NOT EXISTS idx_activity_created_at         ON activity_log (created_at);
 
 CREATE TABLE IF NOT EXISTS recipients (
@@ -145,6 +145,7 @@ function initLibrary(userDir) {
   try { db.exec('ALTER TABLE decks ADD COLUMN recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL'); } catch {}
   try { db.exec('ALTER TABLE deck_cards ADD COLUMN is_proxy INTEGER NOT NULL DEFAULT 0'); } catch {}
   try { db.exec('ALTER TABLE collection ADD COLUMN recipient_id INTEGER REFERENCES recipients(id) ON DELETE SET NULL'); } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_collection_owner_oracle ON collection (oracle_id, recipient_id, scryfall_id)'); } catch {}
   try { db.exec('ALTER TABLE ai_conversations ADD COLUMN declined_oracle_ids TEXT'); } catch {}
   try { db.exec('ALTER TABLE ai_conversations ADD COLUMN session_handle TEXT'); } catch {}
   return db;
