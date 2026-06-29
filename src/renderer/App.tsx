@@ -60,6 +60,21 @@ export function App() {
     <HashRouter>
       <GlobalCardTooltip />
       <AIChatPanel />
+      {import.meta.env.DEV && (
+        <div style={{
+          position: 'fixed', bottom: 0, right: 0, zIndex: 9999,
+          width: 64, height: 64, overflow: 'hidden', pointerEvents: 'none',
+        }}>
+          <span style={{
+            position: 'absolute', bottom: 14, right: -18,
+            background: '#f59e0b', color: '#000',
+            fontSize: 10, fontWeight: 700, letterSpacing: 1,
+            padding: '2px 20px',
+            transform: 'rotate(-45deg)',
+            transformOrigin: 'center',
+          }}>DEV</span>
+        </div>
+      )}
       <Routes>
         {/* DeckView has its own full layout (no AppLayout sidebar) */}
         <Route path="/deck/:id" element={<DeckView />} />
