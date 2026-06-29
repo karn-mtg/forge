@@ -15,7 +15,9 @@ const path = require('path');
  * accessible to any tool — Electron, MCP servers, CLI scripts, etc.
  */
 function resolveKarnDataDir() {
-  const dirName = process.platform === 'win32' ? 'karnData' : '.karnData';
+  const isDev = process.env.NODE_ENV === 'development';
+  const baseName = process.platform === 'win32' ? 'karnData' : '.karnData';
+  const dirName = isDev ? `${baseName}-dev` : baseName;
   return path.join(os.homedir(), dirName);
 }
 
