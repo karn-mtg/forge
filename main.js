@@ -210,13 +210,19 @@ app.whenReady().then(async () => {
 
   // Reusable: called at startup and again after any install/update so Claude
   // always finds the latest binary path without restarting the app.
-  const rewriteMcpSettings = () => writeClaudeMcpSettings(arsenal, { chatBridgePort });
+  const onInstallComplete = () => {
+    writeClaudeMcpSettings(arsenal, { chatBridgePort });
+    if (!cardsDb) {
+      cardsDb = initCards(arsenal.dataDir);
+      if (cardsDb) log.info('Cards DB initialized after arsenal install — card search now available');
+    }
+  };
 
-  arsenal.registerIpcHandlers(ipcMain, rewriteMcpSettings);
+  arsenal.registerIpcHandlers(ipcMain, onInstallComplete);
   log.info('All IPC handlers registered');
 
   // Register arsenal + karnforge + chat-controller MCP servers in .claude/settings.json
-  rewriteMcpSettings();
+  onInstallComplete();
 
   createWindow();
   setupAutoUpdater();

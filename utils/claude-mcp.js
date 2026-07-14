@@ -5,7 +5,9 @@ const path = require('path');
 const os   = require('os');
 
 /**
- * Writes ~/.claude/settings.json with resolved MCP server paths.
+ * Registers MCP servers in ~/.claude.json, which is where Claude Code actually
+ * reads user-scoped MCP server definitions from (NOT ~/.claude/settings.json —
+ * that file's "mcpServers" key is not consulted for spawning servers).
  * Called once at app startup so Claude always finds the right executables.
  *
  * Three servers are registered:
@@ -16,14 +18,26 @@ const os   = require('os');
  * Claude spawns these on-demand via stdio transport; Electron does not manage
  * their lifecycle.
  */
+// Windows paths written here have repeatedly come back from ~/.claude.json with
+// every backslash silently stripped (something downstream — Claude Code's legacy
+// settings.json migration, most likely — round-trips them through backslash-escape
+// processing). Forward slashes are accepted by Windows CreateProcess/child_process
+// just as well and can't be mangled that way, so normalize before writing.
+function _toForwardSlashes(p) {
+  return process.platform === 'win32' ? p.split(path.sep).join('/') : p;
+}
+
 function writeClaudeMcpSettings(arsenal, { chatBridgePort } = {}) {
-  // Write to the user's real home directory, not a path inside the asar archive.
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  // ~/.claude.json holds all of Claude Code's user state, not just MCP config —
+  // merge into its "mcpServers" key rather than overwriting the file.
+  const settingsPath = path.join(os.homedir(), '.claude.json');
 
   let existing = {};
   try { existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
 
-  const mcpServers = {};
+  // Preserve any servers the user registered themselves (e.g. via `claude mcp add`)
+  // instead of clobbering the whole mcpServers map.
+  const mcpServers = { ...existing.mcpServers };
 
   // In a packaged build the source files are in app.asar.unpacked (see asarUnpack
   // in package.json). In dev they live in the real project directory.
@@ -35,28 +49,30 @@ function writeClaudeMcpSettings(arsenal, { chatBridgePort } = {}) {
   const nodeModulesPath = _resolveNodeModulesPath();
   const baseEnv = {
     ELECTRON_RUN_AS_NODE: '1',
-    ...(nodeModulesPath ? { NODE_PATH: nodeModulesPath } : {}),
+    ...(nodeModulesPath ? { NODE_PATH: _toForwardSlashes(nodeModulesPath) } : {}),
   };
 
   // karnforge MCP server — uses the same Electron binary so better-sqlite3
   // bindings match the runtime the app was built against.
   mcpServers.karnforge = {
-    command: process.execPath,
-    args: ['-r', tsxCjs, path.join(projectRoot, 'mcp', 'index.js')],
+    type: 'stdio',
+    command: _toForwardSlashes(process.execPath),
+    args: ['-r', _toForwardSlashes(tsxCjs), _toForwardSlashes(path.join(projectRoot, 'mcp', 'index.js'))],
     env: baseEnv,
-    cwd: os.homedir(),
+    cwd: _toForwardSlashes(os.homedir()),
   };
 
   // chat-controller MCP — pushes typed UI events to the renderer via HTTP bridge
   if (chatBridgePort) {
     mcpServers['chat-controller'] = {
-      command: process.execPath,
-      args: ['-r', tsxCjs, path.join(projectRoot, 'mcp', 'chat-controller', 'index.js')],
+      type: 'stdio',
+      command: _toForwardSlashes(process.execPath),
+      args: ['-r', _toForwardSlashes(tsxCjs), _toForwardSlashes(path.join(projectRoot, 'mcp', 'chat-controller', 'index.js'))],
       env: {
         ...baseEnv,
         KARNFORGE_BRIDGE_PORT: String(chatBridgePort),
       },
-      cwd: os.homedir(),
+      cwd: _toForwardSlashes(os.homedir()),
     };
   }
 
@@ -64,9 +80,10 @@ function writeClaudeMcpSettings(arsenal, { chatBridgePort } = {}) {
   const karnExe = arsenal.getExecutable('karn');
   if (karnExe) {
     mcpServers['karn'] = {
-      command: karnExe,
-      env: { KARN_DATA_DIR: arsenal.dataDir },
-      cwd: arsenal.arsenalDir,
+      type: 'stdio',
+      command: _toForwardSlashes(karnExe),
+      env: { KARN_DATA_DIR: _toForwardSlashes(arsenal.dataDir) },
+      cwd: _toForwardSlashes(arsenal.arsenalDir),
     };
   }
 
@@ -75,9 +92,9 @@ function writeClaudeMcpSettings(arsenal, { chatBridgePort } = {}) {
   try {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(updated, null, 2) + '\n');
-    console.log('[mcp] Wrote ~/.claude/settings.json with', Object.keys(mcpServers).join(', '));
+    console.log('[mcp] Wrote ~/.claude.json mcpServers:', Object.keys(mcpServers).join(', '));
   } catch (err) {
-    console.warn('[mcp] Could not write ~/.claude/settings.json:', err.message);
+    console.warn('[mcp] Could not write ~/.claude.json:', err.message);
   }
 }
 

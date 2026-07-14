@@ -71,10 +71,13 @@ class ArsenalManager {
   }
 
   /**
-   * Fetch releases from GitHub and find the latest one whose tag starts with prefix.
+   * Fetch releases from GitHub and find the latest one whose tag starts with prefix
+   * that also has an uploaded asset whose name matches assetNameFn (if provided).
+   * @param {string} prefix
+   * @param {((version: string) => string) | null} assetNameFn - optional: given version, returns expected asset filename
    * @returns {Promise<string|null>} version string (without prefix), or null
    */
-  async _fetchLatestByPrefix(prefix) {
+  async _fetchLatestByPrefix(prefix, assetNameFn = null) {
     return new Promise((resolve) => {
       const options = {
         hostname: 'api.github.com',
@@ -90,7 +93,16 @@ class ArsenalManager {
         res.on('end', () => {
           try {
             const releases = JSON.parse(raw);
-            const match = releases.find(r => (r.tag_name || '').startsWith(prefix));
+            const candidates = releases.filter(r => (r.tag_name || '').startsWith(prefix));
+            if (!assetNameFn) {
+              const match = candidates[0];
+              return resolve(match ? match.tag_name.slice(prefix.length) : null);
+            }
+            const match = candidates.find(r => {
+              const version = r.tag_name.slice(prefix.length);
+              const expectedAsset = assetNameFn(version);
+              return (r.assets || []).some(a => a.name === expectedAsset);
+            });
             resolve(match ? match.tag_name.slice(prefix.length) : null);
           } catch {
             resolve(null);
@@ -116,7 +128,8 @@ class ArsenalManager {
 
     const current = this.getInstalledVersion();
     log.info(`arsenal:checkForUpdates server current=${current ?? 'none'}`);
-    const latest = await this._fetchLatestByPrefix(TAG_PREFIXES.server);
+    const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux';
+    const latest = await this._fetchLatestByPrefix(TAG_PREFIXES.server, v => ASSET_TEMPLATES.server(v, platform));
     const hasUpdate = !!latest && latest !== current;
     const result = { current, latest, hasUpdate };
     this._updateCache.server = result;
@@ -139,7 +152,7 @@ class ArsenalManager {
 
     const current = this.getInstalledDbVersion(component);
     log.info(`arsenal:checkForDbUpdates ${component} current=${current ?? 'none'}`);
-    const latest = await this._fetchLatestByPrefix(TAG_PREFIXES[component]);
+    const latest = await this._fetchLatestByPrefix(TAG_PREFIXES[component], v => ASSET_TEMPLATES[component](v));
     const hasUpdate = !!latest && latest !== current;
     const result = { current, latest, hasUpdate };
     this._updateCache[component] = result;
@@ -320,10 +333,11 @@ class ArsenalManager {
     const emit = (phase, pct) => { if (typeof onProgress === 'function') onProgress({ phase, pct }); };
 
     log.info('arsenal:installAll — fetching latest versions');
+    const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux';
     const [serverVersion, cardsVersion, rulesVersion] = await Promise.all([
-      this._fetchLatestByPrefix(TAG_PREFIXES.server),
-      this._fetchLatestByPrefix(TAG_PREFIXES.cards),
-      this._fetchLatestByPrefix(TAG_PREFIXES.rules),
+      this._fetchLatestByPrefix(TAG_PREFIXES.server, v => ASSET_TEMPLATES.server(v, platform)),
+      this._fetchLatestByPrefix(TAG_PREFIXES.cards,  v => ASSET_TEMPLATES.cards(v)),
+      this._fetchLatestByPrefix(TAG_PREFIXES.rules,  v => ASSET_TEMPLATES.rules(v)),
     ]);
 
     if (!serverVersion) throw new Error('Could not fetch latest server version from GitHub.');
