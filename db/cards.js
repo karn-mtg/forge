@@ -258,10 +258,17 @@ function searchCards(db, {
 
   if (!hasAnyFilter) return { cards: [] };
 
-  // full_data (large Scryfall JSON blob) is excluded from search results — only getCard needs it
+  // full_data (large Scryfall JSON blob) is excluded from search results — only getCard needs it.
+  // image_uris/card_faces live per-printing on card_images, not on cards — pull the most recent
+  // printing that actually has art so search-result thumbnails have something to show.
   const SEARCH_COLS = `c.oracle_id, c.name, c.type_line, c.oracle_text, c.color_identity,
-    c.cmc, c.mana_cost, c.keywords, c.legalities, c.reserved,
-    c.image_url, c.released_at, c.sets, c.colors`;
+    c.cmc, c.mana_cost, c.keywords, c.legalities, c.reserved, c.sets, c.colors,
+    (SELECT ci.image_uris FROM card_images ci
+      WHERE ci.oracle_id = c.oracle_id AND ci.image_uris IS NOT NULL
+      ORDER BY ci.released_at DESC LIMIT 1) AS image_uris_json,
+    (SELECT ci.card_faces FROM card_images ci
+      WHERE ci.oracle_id = c.oracle_id AND ci.image_uris IS NOT NULL
+      ORDER BY ci.released_at DESC LIMIT 1) AS card_faces_json`;
 
   let rows;
   if (ftsQuery) {
@@ -284,7 +291,14 @@ function searchCards(db, {
     `).all(pageSize, offset);
   }
 
-  return { cards: rows };
+  const cards = rows.map(({ image_uris_json, card_faces_json, ...row }) => Object.assign(row, {
+    full_data: {
+      image_uris: fromJson(image_uris_json),
+      card_faces: fromJson(card_faces_json),
+    },
+  }));
+
+  return { cards };
 }
 
 function getCard(db, { oracleId }) {
