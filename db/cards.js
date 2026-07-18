@@ -22,10 +22,10 @@ const AI_METADATA_SCHEMA = `
 function initCards(arsenalDataDir) {
   const dbPath = path.join(arsenalDataDir, 'prints.db');
   if (!require('fs').existsSync(dbPath)) {
-    console.log('[cards] prints.db not found — waiting for karn-arsenal to initialise it');
+    console.error('[cards] prints.db not found — waiting for karn-arsenal to initialise it');
     return null;
   }
-  console.log('[cards] Opening arsenal prints.db:', dbPath);
+  console.error('[cards] Opening arsenal prints.db:', dbPath);
   const db = new Database(dbPath);
 
   // karnforge-owned table only — karn-arsenal owns the rest

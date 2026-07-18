@@ -70,7 +70,7 @@
       "db/**/*",
       "utils/**/*",
       "ipc/**/*",
-      "node_modules/tsx/**/*"
+      "node_modules/**/*"
     ],
     "extraResources": [
       {

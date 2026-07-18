@@ -115,14 +115,16 @@ function _resolveProjectRoot() {
 
 /**
  * Returns the node_modules path that subprocess workers should use for
- * resolving packages. In production this points into the asar archive so
- * that Electron's patched fs can serve reads from it.
+ * resolving packages. tsx's custom CJS resolver does not honor NODE_PATH
+ * fallback resolution into a packed asar, so this must point at the
+ * unpacked copy (app.asar.unpacked/node_modules) — a real directory that
+ * plain directory-walk resolution can also find on its own.
  */
 function _resolveNodeModulesPath() {
   try {
     const { app } = require('electron');
     if (app.isPackaged) {
-      return path.join(app.getAppPath(), 'node_modules');
+      return path.join(_resolveProjectRoot(), 'node_modules');
     }
   } catch {}
   return '';
