@@ -1,33 +1,15 @@
 import { useState, useEffect, useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { Card } from '../types/electron';
+import { ManaCost } from './ManaSymbol';
 
 // ─── Mana pip renderer ────────────────────────────────────────────────────────
-
-const MANA_HEX: Record<string, string> = {
-  W: '#f0d870', U: '#4a7cc9', B: '#3a3a3a', R: '#c0392b', G: '#27ae60', C: '#aaa',
-};
+// Uses the shared mana-font icon set (ManaSymbol.tsx) — same rendering as the
+// card detail panel and the deck List tab, for a consistent look everywhere.
 
 function PipRow({ manaCost }: { manaCost?: string }) {
   if (!manaCost) return null;
-  const pips: { sym: string; bg: string }[] = [];
-  for (const m of manaCost.matchAll(/\{([^}]+)\}/g)) {
-    const sym = m[1].toUpperCase();
-    pips.push({ sym, bg: MANA_HEX[sym] || '#444' });
-  }
-  return (
-    <div className="flex gap-0.5 items-center flex-shrink-0">
-      {pips.map((p, i) => (
-        <span key={i} style={{
-          width: 10, height: 10, borderRadius: '50%', background: p.bg,
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 7, color: '#ccc', flexShrink: 0,
-        }}>
-          {MANA_HEX[p.sym] ? '' : p.sym}
-        </span>
-      ))}
-    </div>
-  );
+  return <ManaCost manaCost={manaCost} size="10px" className="flex-shrink-0" />;
 }
 
 // ─── Filter definitions ───────────────────────────────────────────────────────

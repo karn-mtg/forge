@@ -13,10 +13,16 @@
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",
-    "dist:linux": "npm run build && electron-builder --linux"
+    "dist:linux": "npm run build && electron-builder --linux",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "inspect": "node scripts/visual-inspect.mjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
@@ -26,15 +32,17 @@
     "cross-env": "^10.1.0",
     "electron": "^33.4.11",
     "electron-builder": "^25.0.0",
+    "jsdom": "^27.0.1",
+    "playwright": "^1.61.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^6.0.3",
     "unzipper": "^0.12.3",
-    "vite": "^8.0.14"
+    "vite": "^8.0.14",
+    "vitest": "^3.2.7"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "tsx": "^4.22.3",
     "better-sqlite3": "^12.10.0",
     "electron-updater": "^6.8.9",
     "mana-font": "^1.18.0",
@@ -42,6 +50,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1",
+    "tsx": "^4.22.3",
     "unzipper": "^0.12.3",
     "zustand": "^5.0.13"
   },

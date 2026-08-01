@@ -65,8 +65,28 @@ function registerLibraryHandlers(ipcMain, getDb) {
   handle('lib:loadArrangementCanvas',   lib.loadArrangementCanvas);
   handle('lib:getDecksWithCard',        lib.getDecksWithCard);
   handle('lib:getMostUsedCards',        lib.getMostUsedCards);
+  handle('lib:getCardTags',             lib.getCardTags);
+  handle('lib:getDeckTags',             lib.getDeckTags);
+  handle('lib:getDeckTagColors',        lib.getDeckTagColors);
+  handle('lib:setTagColor',             lib.setTagColor);
+  handle('lib:setCardTagAt',            lib.setCardTagAt);
+  handle('lib:clearCardTagAt',          lib.clearCardTagAt);
+  handle('lib:setCardTags',             lib.setCardTags);
+  handle('lib:renameTagInDeck',         lib.renameTagInDeck);
+  handle('lib:deleteTagFromDeck',       lib.deleteTagFromDeck);
+  handle('lib:setArrangementGroupingLevel', lib.setArrangementGroupingLevel);
+  handle('lib:getBranches',             lib.getBranches);
+  handle('lib:createBranch',            lib.createBranch);
+  handle('lib:renameBranch',            lib.renameBranch);
+  handle('lib:deleteBranch',            lib.deleteBranch);
+  handle('lib:getVersions',             lib.getVersions);
+  handle('lib:releaseVersion',          lib.releaseVersion);
+  handle('lib:getVersionDiff',          lib.getVersionDiff);
+  handle('lib:isDeckDirty',             lib.isDeckDirty);
+  handle('lib:switchBranch',            lib.switchBranch);
+  handle('lib:restoreVersion',          lib.restoreVersion);
 
-  log.info(`Registered ${44} lib: handlers`);
+  log.info(`Registered ${64} lib: handlers`);
 }
 
 module.exports = { registerLibraryHandlers };

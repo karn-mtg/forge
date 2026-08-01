@@ -8,7 +8,7 @@ import { CardSearchPanel } from '../components/CardSearchPanel';
 import type { CardSearchPanelHandle } from '../components/CardSearchPanel';
 import { CardDetailPanel } from '../components/CardDetailPanel';
 import { DeckSettingsModal } from '../components/DeckSettingsModal';
-import type { Deck, Card, DeckCardEntry, Arrangement } from '../types/electron';
+import type { Deck, Card, DeckCardEntry, Arrangement, DeckBranch, DeckVersion, VersionDiff } from '../types/electron';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useToastStore } from '../store/useToastStore';
 import { manaCostToHtml } from '../components/ManaSymbol';
@@ -20,7 +20,8 @@ import { overlayWrapperCss } from '../widgets/overlayRegistry';
 import { persistCustomWidgets, persistCustomDecorators } from '../App';
 import { WidgetEditorModal } from '../components/WidgetEditorModal';
 import { esc } from '../utils/escape';
-import { useAIStore } from '../store/useAIStore';
+import { computeEffectiveGroups, groupByAssignment, withTagAt, withoutTagAt, withPlaceholderAt, type TaggedCard, type CardTagSlot } from '../lib/tagGrouping';
+import type { CardTagRow } from '../types/electron';
 
 // Shared marked options: GFM + soft line breaks
 const MARKED_OPTS = { breaks: true, gfm: true };
@@ -78,6 +79,12 @@ function QtyInput({ value, onChange }: { value: number; onChange: (v: number) =>
   );
 }
 
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 function getCategory(typeLine: string): string {
   const t = (typeLine || '').toLowerCase();
   if (t.includes('creature')) return 'Creatures';
@@ -116,16 +123,35 @@ interface PreSelectConfirmData {
   conflicts: PreSelectConflict[];
 }
 
-/** Raw canvas-group shape — oracle IDs resolved from DOM, qty from deckCards. */
+/** Raw canvas-group shape — oracle IDs resolved from DOM, qty from deckCards.
+ *  Every group is tag-derived (see renderTagGroups); this just reads back the
+ *  DOM state it produced, which is also what widgets consume. */
 interface RawCanvasGroup {
   name: string;
   color: string;
   oracleIds: string[];
 }
 
+/** Per-tag, per-arrangement visual settings — a group's box position/layout/card order. */
+interface TagGroupSettings {
+  left: number;
+  top: number;
+  layoutMode: string;
+  cardsPerRow: number;
+  maxStack: number;
+  cardOrder: number[];
+}
+
+function cardTagRowsToSlots(rows: CardTagRow[]): CardTagSlot[] {
+  return rows.map(r => ({ position: r.position, tagName: r.tag_name, isPlaceholder: !!r.is_placeholder }));
+}
+
 /**
  * Read all `.group-container` elements from the canvas and return raw group info.
  * Call this just before building WidgetData to snapshot the current arrangement.
+ * Since renderTagGroups is the sole author of `.group-container` elements now,
+ * this transitively reflects tag-derived membership — no separate widget-side
+ * tag computation needed.
  */
 function readCanvasGroups(cv: HTMLDivElement): RawCanvasGroup[] {
   const out: RawCanvasGroup[] = [];
@@ -168,6 +194,7 @@ function buildWidgetDataFromState(
         : typeof ci === 'string' && ci ? ci.split('').filter(c => 'WUBRG'.includes(c))
         : [],
       edhrecRank: det?.full_data?.edhrec_rank as number | undefined,
+      priceUsd: parseFloat((det?.full_data as any)?.prices?.usd || '0') || undefined,
     };
   };
   const mainCards = deckCards.filter(dc => dc.board !== 'sideboard').map(mapCard);
@@ -403,6 +430,51 @@ function relayoutGroup(groupEl: HTMLDivElement) {
   }
 }
 
+// Inserts cardEl into groupEl's card-list at the position nearest (clientX,
+// clientY) — the sibling whose center the cursor is above/left-of becomes
+// the "insert before" target, otherwise it's appended. Works for grid,
+// stack-h, and stack-v since it compares against each sibling's actual
+// rendered rect rather than assuming a layout direction. Also persists the
+// resulting order into tagGroupSettings so it survives reload.
+function placeCardInGroupAtPosition(
+  cardEl: HTMLDivElement,
+  groupEl: HTMLDivElement,
+  clientX: number,
+  clientY: number,
+  tagGroupSettingsRef: { current: Record<string, TagGroupSettings> },
+) {
+  const cardList = groupEl.querySelector<HTMLDivElement>('.card-list')!;
+  const siblings = Array.from(cardList.querySelectorAll<HTMLDivElement>(':scope > .card-stack')).filter(s => s !== cardEl);
+
+  let insertBefore: HTMLDivElement | null = null;
+  for (const sib of siblings) {
+    const r = sib.getBoundingClientRect();
+    const midX = (r.left + r.right) / 2;
+    const midY = (r.top + r.bottom) / 2;
+    const sameRow = clientY >= r.top && clientY <= r.bottom;
+    const before = sameRow ? clientX < midX : clientY < midY;
+    if (before) { insertBefore = sib; break; }
+  }
+  if (insertBefore) cardList.insertBefore(cardEl, insertBefore);
+  else cardList.appendChild(cardEl);
+
+  const tagName = groupEl.dataset.tagName;
+  if (tagName) {
+    const cardOrder = Array.from(cardList.querySelectorAll<HTMLDivElement>(':scope > .card-stack'))
+      .map(el => Number(el.dataset.entryId))
+      .filter((id): id is number => Boolean(id));
+    const existing = tagGroupSettingsRef.current[tagName];
+    tagGroupSettingsRef.current[tagName] = {
+      left: existing?.left ?? (parseFloat(groupEl.style.left) || 0),
+      top: existing?.top ?? (parseFloat(groupEl.style.top) || 0),
+      layoutMode: groupEl.dataset.layoutMode || 'grid',
+      cardsPerRow: parseInt(groupEl.dataset.cardsPerRow || '5', 10),
+      maxStack: parseInt(groupEl.dataset.maxStack || '5', 10),
+      cardOrder,
+    };
+  }
+}
+
 function makeStickerEl(text: string, initWidth?: number, initHeight?: number): HTMLDivElement {
   const el = document.createElement('div');
   el.className = 'sticker canvas-item';
@@ -633,14 +705,13 @@ function ToolbarTooltip({
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-type Tab = 'workshop' | 'list' | 'missing' | 'combos';
+type Tab = 'workshop' | 'list' | 'versions' | 'combos';
 
 export function DeckView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const deckId = parseInt(id || '0', 10);
   const { loadLibrary, updateDeckCardCount } = useLibraryStore();
-  const { toggle: toggleAI, isOpen: aiOpen } = useAIStore();
 
   // Deck state
   const [deck, setDeck] = useState<Deck | null>(null);
@@ -658,6 +729,22 @@ export function DeckView() {
   const [exportFlash, setExportFlash] = useState(false);
   const [exportError, setExportError] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [deckMenuAnchor, setDeckMenuAnchor] = useState<{ top: number; left: number } | null>(null);
+  const deckMenuBtnRef = useRef<HTMLButtonElement>(null);
+
+  // ── Versions / branches state ────────────────────────────────────────────
+  const [branches, setBranches] = useState<DeckBranch[]>([]);
+  const [viewedBranchId, setViewedBranchId] = useState<number | null>(null);
+  const [versions, setVersions] = useState<DeckVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [releasePopoverOpen, setReleasePopoverOpen] = useState(false);
+  const [releaseMessage, setReleaseMessage] = useState('');
+  const [newBranchModal, setNewBranchModal] = useState<{ sourceVersionId: number; sourceLabel: string } | null>(null);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [dirtyPrompt, setDirtyPrompt] = useState<{ kind: 'switch' | 'restore'; targetBranchId?: number; versionId?: number } | null>(null);
+  const [diffPanel, setDiffPanel] = useState<{ versionId: number; diff: VersionDiff | null; loading: boolean; label: string } | null>(null);
+  const [versionsBusy, setVersionsBusy] = useState(false);
 
   // Group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
@@ -670,6 +757,7 @@ export function DeckView() {
   const [groupPreSelectOracleTags, setGroupPreSelectOracleTags] = useState<string[]>([]);
   const [groupPreSelectOracleDraft, setGroupPreSelectOracleDraft] = useState('');
   const [groupPreSelectOracleOp, setGroupPreSelectOracleOp] = useState<'or' | 'and'>('or');
+  const [groupCreateError, setGroupCreateError] = useState<string | null>(null);
 
   // Group pre-select confirmation
   const [preSelectConfirm, setPreSelectConfirm] = useState<PreSelectConfirmData | null>(null);
@@ -678,6 +766,15 @@ export function DeckView() {
 
   // Group context menu
   const [groupMenu, setGroupMenu] = useState<{ top: number; left: number; groupEl: HTMLDivElement } | null>(null);
+
+  // Cross-group tag-reassignment prompt (Case 1: dragging a card off a group
+  // where that tag is genuinely its real tag at the current level — ambiguous
+  // whether the user wants to remove/replace/insert).
+  const [tagReassignPrompt, setTagReassignPrompt] = useState<{
+    cardEl: HTMLDivElement; deckCardId: number; cardName: string;
+    sourceTag: string; destTag: string; destGroupEl: HTMLDivElement;
+    dropAt: { x: number; y: number };
+  } | null>(null);
 
   // Card context menu (right-click on canvas cards)
   const [cardMenu, setCardMenu] = useState<{ top: number; left: number; cardEl: HTMLDivElement; oracleId: string } | null>(null);
@@ -706,6 +803,7 @@ export function DeckView() {
   // Arrangements
   const [arrangements, setArrangements] = useState<Arrangement[]>([]);
   const [currentArrangementId, setCurrentArrangementId] = useState<number | null>(null);
+  const currentArrangement = arrangements.find(a => a.id === currentArrangementId) ?? null;
 
   // Canvas refs
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -775,6 +873,36 @@ export function DeckView() {
   useEffect(() => { deckCardsRef.current = deckCards; },   [deckCards]);
   useEffect(() => { cardDetailsRef.current = cardDetails; }, [cardDetails]);
 
+  // Re-renders tag-derived canvas groups for the current arrangement. Assigned
+  // once renderTagGroups is declared; a ref so early-declared handlers (tag
+  // chip editor callback) can call the latest version without a dependency cycle.
+  const renderTagGroupsRef = useRef<(() => void) | null>(null);
+
+  // deck_card_id -> ordered tag slots, and tag name -> color, for the whole deck.
+  const deckCardTagsRef = useRef<Map<number, CardTagSlot[]>>(new Map());
+  const tagColorsRef    = useRef<Map<string, string>>(new Map());
+  // Per-tag box position/layout/card-order for the *current* arrangement,
+  // seeded from canvas_json.tagGroupSettings at restore time.
+  const tagGroupSettingsRef = useRef<Record<string, TagGroupSettings>>({});
+
+  const loadDeckTags = useCallback(async (id: number) => {
+    try {
+      const [deckTags, colors] = await Promise.all([
+        window.libraryAPI.getDeckTags({ deckId: id }),
+        window.libraryAPI.getDeckTagColors({ deckId: id }),
+      ]);
+      const byCard = new Map<number, CardTagRow[]>();
+      for (const row of deckTags) {
+        if (!byCard.has(row.deck_card_id)) byCard.set(row.deck_card_id, []);
+        byCard.get(row.deck_card_id)!.push(row);
+      }
+      deckCardTagsRef.current = new Map(Array.from(byCard.entries()).map(([id, rows]) => [id, cardTagRowsToSlots(rows)]));
+      tagColorsRef.current = new Map(colors.map(c => [c.tag_name, c.color]));
+    } catch (err) {
+      console.error('Failed to load deck tags:', err);
+    }
+  }, []);
+
   // oracleId → user-selected image URL (overrides the oracle-default image).
   // Persisted in canvas JSON via data-card-json.imageUrl; this ref holds the
   // in-memory version so spawnCardOnCanvas and reconcileCanvas can use it too.
@@ -791,6 +919,7 @@ export function DeckView() {
       const cards = d.cards || [];
       setDeckCards(cards);
       deckCardsRef.current = cards; // sync ref immediately so canvas helpers see fresh data
+      loadDeckTags(deckId);
 
       // Fetch card details and collection statuses in parallel — they don't depend on each other
       const oracleIds = [...new Set(cards.map(c => c.oracle_id).filter(Boolean))];
@@ -838,12 +967,157 @@ export function DeckView() {
     } finally {
       setIsLoading(false);
     }
-  }, [deckId]);
+  }, [deckId, loadDeckTags]);
 
   useEffect(() => {
     loadLibrary();
     loadDeckData();
   }, [loadDeckData, loadLibrary]);
+
+  // ── Versions / branches ──────────────────────────────────────────────────
+
+  const refreshDirty = useCallback(async () => {
+    if (!deckId) return;
+    try { setIsDirty(await window.libraryAPI.isDeckDirty({ deckId })); } catch { /* non-critical */ }
+  }, [deckId]);
+
+  // Eventual-consistency indicator for the tab badge — the backend re-checks
+  // dirtiness authoritatively at switch/restore time regardless of this.
+  useEffect(() => {
+    const t = setTimeout(refreshDirty, 400);
+    return () => clearTimeout(t);
+  }, [deckCards, refreshDirty]);
+
+  const loadBranches = useCallback(async () => {
+    if (!deckId) return [] as DeckBranch[];
+    try {
+      const rows = await window.libraryAPI.getBranches({ deckId });
+      setBranches(rows);
+      return rows;
+    } catch (err) {
+      console.error('Failed to load branches:', err);
+      return [] as DeckBranch[];
+    }
+  }, [deckId]);
+
+  const loadVersions = useCallback(async (branchId: number) => {
+    setVersionsLoading(true);
+    try {
+      const rows = await window.libraryAPI.getVersions({ branchId });
+      setVersions(rows);
+    } catch (err) {
+      console.error('Failed to load versions:', err);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load versions', message: String(err) });
+    } finally {
+      setVersionsLoading(false);
+    }
+  }, []);
+
+  // Open the Versions tab (or the deck loading for the first time) defaults
+  // the viewed branch to whichever branch is currently checked out.
+  useEffect(() => {
+    if (tab !== 'versions' || !deckId) return;
+    (async () => {
+      const rows = await loadBranches();
+      refreshDirty();
+      const active = rows.find(b => b.is_active) || rows[0];
+      if (active) setViewedBranchId(prev => prev ?? active.id);
+    })();
+  }, [tab, deckId, loadBranches, refreshDirty]);
+
+  useEffect(() => {
+    if (viewedBranchId != null) loadVersions(viewedBranchId);
+  }, [viewedBranchId, loadVersions]);
+
+  const isDeckDirtyError = (err: unknown) => String((err as Error)?.message || err).includes('DECK_DIRTY');
+
+  const handleReleaseVersion = async (branchId: number, message: string) => {
+    setVersionsBusy(true);
+    try {
+      await window.libraryAPI.releaseVersion({ branchId, message: message.trim() || null });
+      setReleaseMessage('');
+      setReleasePopoverOpen(false);
+      await loadBranches();
+      await refreshDirty();
+      if (viewedBranchId === branchId) await loadVersions(branchId);
+      useToastStore.getState().push({ type: 'success', title: 'Version released' });
+    } catch (err) {
+      useToastStore.getState().push({ type: 'error', title: 'Failed to release version', message: String(err) });
+    } finally {
+      setVersionsBusy(false);
+    }
+  };
+
+  const handleCreateBranch = async () => {
+    if (!newBranchModal) return;
+    const name = newBranchName.trim();
+    if (!name) return;
+    setVersionsBusy(true);
+    try {
+      const res = await window.libraryAPI.createBranch({ deckId, name, sourceVersionId: newBranchModal.sourceVersionId });
+      setNewBranchModal(null);
+      setNewBranchName('');
+      await loadBranches();
+      setViewedBranchId(res.id);
+      useToastStore.getState().push({ type: 'success', title: `Branch "${name}" created` });
+    } catch (err) {
+      useToastStore.getState().push({ type: 'error', title: 'Failed to create branch', message: String(err) });
+    } finally {
+      setVersionsBusy(false);
+    }
+  };
+
+  const handleDeleteBranch = async (branch: DeckBranch) => {
+    if (!window.confirm(`Delete branch "${branch.name}" and all its versions? This cannot be undone.`)) return;
+    try {
+      await window.libraryAPI.deleteBranch({ id: branch.id });
+      const rows = await loadBranches();
+      if (viewedBranchId === branch.id) {
+        const active = rows.find(b => b.is_active) || rows[0];
+        setViewedBranchId(active ? active.id : null);
+      }
+      useToastStore.getState().push({ type: 'success', title: 'Branch deleted' });
+    } catch (err) {
+      useToastStore.getState().push({ type: 'error', title: 'Failed to delete branch', message: String(err) });
+    }
+  };
+
+  const handleRenameBranch = async (branch: DeckBranch, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === branch.name) return;
+    try {
+      await window.libraryAPI.renameBranch({ id: branch.id, name: trimmed });
+      await loadBranches();
+    } catch (err) {
+      useToastStore.getState().push({ type: 'error', title: 'Failed to rename branch', message: String(err) });
+    }
+  };
+
+  const handleViewDiff = async (versionId: number, compareToId: number | null, label: string) => {
+    if (compareToId == null) { setDiffPanel({ versionId, diff: null, loading: false, label }); return; }
+    setDiffPanel({ versionId, diff: null, loading: true, label });
+    try {
+      const diff = await window.libraryAPI.getVersionDiff({ versionAId: compareToId, versionBId: versionId });
+      // Diffed cards may no longer be in the live deck — fetch any we don't have details for.
+      const allIds = [...diff.added, ...diff.removed, ...diff.changed].map(c => c.oracle_id);
+      const missing = [...new Set(allIds)].filter(oid => !cardDetailsRef.current[oid]);
+      if (missing.length) {
+        try {
+          const details = await window.cardsAPI.getCardsBatch({ oracleIds: missing });
+          setCardDetails(prev => {
+            const next = { ...prev };
+            (details as Card[]).forEach(c => { next[c.oracle_id] = c; });
+            cardDetailsRef.current = next;
+            return next;
+          });
+        } catch { /* non-critical — diff still renders with oracle_id fallback */ }
+      }
+      setDiffPanel({ versionId, diff, loading: false, label });
+    } catch (err) {
+      setDiffPanel(null);
+      useToastStore.getState().push({ type: 'error', title: 'Failed to load diff', message: String(err) });
+    }
+  };
 
   // ── Canvas init ───────────────────────────────────────────────────────────
 
@@ -900,23 +1174,27 @@ export function DeckView() {
   }, []);
   const serializeCanvas = useCallback(() => {
     const cv = canvasRef.current!;
-    const state: { tx: number; ty: number; sc: number; groups: unknown[]; freeCards: unknown[]; stickers: unknown[]; widgets: unknown[]; decorators: unknown[] } = {
+    const state: { tx: number; ty: number; sc: number; tagGroupSettings: Record<string, TagGroupSettings>; freeCards: unknown[]; stickers: unknown[]; widgets: unknown[]; decorators: unknown[] } = {
       tx: txRef.current, ty: tyRef.current, sc: scRef.current,
-      groups: [], freeCards: [], stickers: [], widgets: [], decorators: [],
+      tagGroupSettings: {}, freeCards: [], stickers: [], widgets: [], decorators: [],
     };
 
-    cv.querySelectorAll<HTMLDivElement>(':scope > .group-container').forEach(g => {
-      const cards: unknown[] = [];
-      g.querySelectorAll<HTMLDivElement>('.card-stack').forEach(c => {
-        if (c.dataset.cardJson) { try { cards.push(JSON.parse(c.dataset.cardJson)); } catch {} }
+    // Groups are tag-derived (not stored membership) — persist only the
+    // per-tag box position/layout/order, keyed by tag name.
+    cv.querySelectorAll<HTMLDivElement>(':scope > .group-container[data-tag-name]').forEach(g => {
+      const tagName = g.dataset.tagName!;
+      const cardOrder: number[] = [];
+      g.querySelectorAll<HTMLDivElement>('.card-list > .card-stack').forEach(c => {
+        const eid = Number(c.dataset.entryId);
+        if (eid) cardOrder.push(eid);
       });
-      state.groups.push({
+      state.tagGroupSettings[tagName] = {
         left: parseFloat(g.style.left) || 0, top: parseFloat(g.style.top) || 0,
-        name: g.dataset.name || '', color: g.dataset.color || '#f2ca83', cards,
         layoutMode: g.dataset.layoutMode || 'grid',
         cardsPerRow: parseInt(g.dataset.cardsPerRow || '5', 10),
         maxStack: parseInt(g.dataset.maxStack || '5', 10),
-      });
+        cardOrder,
+      };
     });
     cv.querySelectorAll<HTMLDivElement>(':scope > .card-stack').forEach(c => {
       if (!c.dataset.cardJson) return;
@@ -1270,18 +1548,34 @@ export function DeckView() {
     e.stopPropagation(); e.preventDefault();
   }, [s2c, makeItemDraggable, clearSel, selectEl, syncSelCount]);
 
-  const dropIntoGroup = useCallback((cardEl: HTMLDivElement, groupEl: HTMLDivElement) => {
+  // Persists "this card's tag at the arrangement's grouping level = tagName"
+  // — the simple/unambiguous case (card had no real tag at this level, so
+  // there's nothing to ask about). Case 1 (moving between two groups where
+  // the source was a REAL tag at this level) is handled by the drag-drop
+  // reassignment flow, which prompts before ever calling this.
+  const persistCardTagRef = useRef<(deckCardId: number, tagName: string) => void>(() => {});
+
+  const dropIntoGroup = useCallback((cardEl: HTMLDivElement, groupEl: HTMLDivElement, dropAt?: { x: number; y: number }) => {
     cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
     cardEl.classList.remove('canvas-item', 'selected');
     selRef.current.delete(cardEl);
     syncSelCount();
     cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
     canvasRef.current!.removeChild(cardEl);
-    groupEl.querySelector('.card-list')!.appendChild(cardEl);
+    if (dropAt) {
+      groupEl.querySelector('.card-list')!.appendChild(cardEl); // ensure it's in the DOM before rect math
+      placeCardInGroupAtPosition(cardEl, groupEl, dropAt.x, dropAt.y, tagGroupSettingsRef);
+    } else {
+      groupEl.querySelector('.card-list')!.appendChild(cardEl);
+    }
     relayoutGroup(groupEl);
     // Drag-out is handled by makeItemDraggable (already on the card from canvas spawn).
     // makeCardClickable handles click → open detail panel.
     makeCardClickable(cardEl);
+
+    const tagName = groupEl.dataset.tagName;
+    const deckCardId = Number(cardEl.dataset.entryId);
+    if (tagName && deckCardId) persistCardTagRef.current(deckCardId, tagName);
   }, [ejectCard, makeCardClickable, syncSelCount]);
 
   const spawnCardOnCanvas = useCallback((card: Card, qty = 1, board = 'main', entryId?: number) => {
@@ -1539,16 +1833,20 @@ export function DeckView() {
   // Restore canvas from JSON state
   const restoreCanvas = useCallback((state: {
     tx?: number; ty?: number; sc?: number;
-    groups?: { left: number; top: number; name: string; color: string; cards: CardData[]; layoutMode?: string; cardsPerRow?: number; maxStack?: number }[];
     freeCards?: (CardData & { left: number; top: number })[];
     stickers?: { left: number; top: number; text: string; width?: number; height?: number }[];
     widgets?: { defId: string; left: number; top: number; width?: number; params?: Record<string, number | string | boolean> }[];
     decorators?: { defId: string; left: number; top: number; params?: Record<string, number | string | boolean> }[];
+    tagGroupSettings?: Record<string, TagGroupSettings>;
   }) => {
     const cv = canvasRef.current!;
     Array.from(cv.children).forEach(el => { if ((el as HTMLElement).id !== 'sel-box') el.remove(); });
     txRef.current = state.tx ?? 80; tyRef.current = state.ty ?? 60; scRef.current = state.sc ?? 1;
     applyT();
+    // Group boxes are re-derived from tags, not stored here — seed the per-tag
+    // position/layout/order defaults for renderTagGroups (called after this,
+    // once reconcileCanvas has ensured every deck card has a DOM element).
+    tagGroupSettingsRef.current = state.tagGroupSettings || {};
 
     // Only render cards still present in the deck (filter ghost cards from old saves).
     // Prefer matching by entryId (unique per instance) when available; fall back to
@@ -1556,35 +1854,6 @@ export function DeckView() {
     const deckIds      = new Set(deckCardsRef.current.map(dc => dc.oracle_id));
     const deckEntryIds = new Set(deckCardsRef.current.map(dc => dc.id));
     const hasIds  = deckIds.size > 0; // false only during initial load race — allow all then
-
-    for (const g of state.groups || []) {
-      const el = makeGroupEl(g.name, g.color, g.layoutMode || 'grid', g.cardsPerRow ?? 5, g.maxStack ?? 5);
-      el.style.cssText = `left:${g.left}px;top:${g.top}px;z-index:10;border-color:${g.color}55;`;
-      const cardList = el.querySelector('.card-list')!;
-      for (const c of g.cards || []) {
-        // entryId present → check specific instance; else fall back to oracle_id membership
-        if (hasIds && c.entryId ? !deckEntryIds.has(c.entryId) : !deckIds.has(c.oracleId)) continue; // skip removed cards
-        const cardEl = makeCardEl(c);
-        cardEl.style.cssText = ''; cardEl.style.cursor = 'grab';
-        cardEl.classList.remove('canvas-item');
-        cardEl.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
-        cardList.appendChild(cardEl);
-        makeItemDraggable(cardEl, 'card'); // threshold + ghost mechanic, same as live-dragged cards
-        makeCardClickable(cardEl);
-        attachContextMenu(cardEl);
-      }
-      relayoutGroup(el);
-      cv.appendChild(el);
-      makeItemDraggable(el, 'group');
-      attachContextMenu(el);
-      // Group menu button
-      el.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        const wvr = viewportRef.current!.getBoundingClientRect();
-        setGroupMenu({ top: r.top - wvr.top, left: r.right - wvr.left + 6, groupEl: el });
-      });
-    }
 
     for (const c of state.freeCards || []) {
       if (hasIds && (c.entryId ? !deckEntryIds.has(c.entryId) : !deckIds.has(c.oracleId))) continue; // skip removed cards
@@ -1725,6 +1994,173 @@ export function DeckView() {
     if (col > 0) scheduleAutoSave(); // only save if we added something
   }, [makeCardEl, makeItemDraggable, makeCardClickable, attachContextMenu, scheduleAutoSave]);
 
+  // Re-derives every tag-backed group box on the current arrangement from the
+  // deck's tags at the arrangement's grouping_level, and reparents cards into
+  // (or out of) their effective group. A group IS a tag now — there's no
+  // separate freeform concept — so this fully owns .group-container lifecycle:
+  // creating boxes for tags that need one, ejecting cards that no longer
+  // belong, and removing boxes for tags with nothing to show. Call after
+  // reconcileCanvas (which guarantees every deck card has a DOM element) and
+  // after any tag mutation (chip editor, drag-drop, grouping-level change).
+  const renderTagGroups = useCallback(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const arr = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
+    const level = arr?.grouping_level ?? 1;
+
+    const tagged: TaggedCard[] = deckCardsRef.current
+      .filter(dc => dc.board !== 'sideboard')
+      .map(dc => ({ deckCardId: dc.id, tags: deckCardTagsRef.current.get(dc.id) || [] }));
+
+    const assignment = computeEffectiveGroups(tagged, level);
+    const groups = groupByAssignment(tagged, assignment);
+    const settings = tagGroupSettingsRef.current;
+    // Only tags with real or fallback members get a box — an empty group
+    // vanishes automatically. Its settings/color stay cached so the box
+    // reappears with the same layout if a card gets tagged with it again.
+    const neededNames = new Set<string>(groups.keys());
+
+    const cardEls = new Map<number, HTMLDivElement>();
+    cv.querySelectorAll<HTMLDivElement>('[data-entry-id]').forEach(el => {
+      const id = Number(el.dataset.entryId);
+      if (id) cardEls.set(id, el);
+    });
+
+    let autoIdx = 0;
+    neededNames.forEach(tagName => {
+      const color = tagColorsRef.current.get(tagName) || '#f2ca83';
+      const s = settings[tagName];
+      let groupEl = cv.querySelector<HTMLDivElement>(`:scope > .group-container[data-tag-name="${CSS.escape(tagName)}"]`);
+
+      if (!groupEl) {
+        groupEl = makeGroupEl(tagName, color, s?.layoutMode || 'grid', s?.cardsPerRow ?? 5, s?.maxStack ?? 5);
+        groupEl.dataset.tagName = tagName;
+        const left = s?.left ?? (40 + (autoIdx % 4) * 340);
+        const top  = s?.top  ?? (40 + Math.floor(autoIdx / 4) * 360);
+        autoIdx++;
+        groupEl.style.cssText = `left:${left}px;top:${top}px;z-index:10;border-color:${color}55;`;
+        cv.appendChild(groupEl);
+        makeItemDraggable(groupEl, 'group');
+        attachContextMenu(groupEl);
+        const gEl = groupEl;
+        gEl.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const wvr = viewportRef.current!.getBoundingClientRect();
+          setGroupMenu({ top: r.top - wvr.top, left: r.right - wvr.left + 6, groupEl: gEl });
+        });
+      } else {
+        groupEl.dataset.name = tagName;
+        groupEl.dataset.color = color;
+        groupEl.style.borderColor = color + '55';
+      }
+
+      const members = groups.get(tagName) || [];
+      const order = s?.cardOrder;
+      const sorted = order
+        ? [...members].sort((a, b) => {
+            const ia = order.indexOf(a.deckCardId), ib = order.indexOf(b.deckCardId);
+            if (ia === -1 && ib === -1) return 0;
+            if (ia === -1) return 1;
+            if (ib === -1) return -1;
+            return ia - ib;
+          })
+        : members;
+
+      const cardList = groupEl.querySelector<HTMLDivElement>('.card-list');
+      if (cardList) {
+        for (const m of sorted) {
+          const el = cardEls.get(m.deckCardId);
+          if (!el) continue;
+          el.style.cssText = ''; el.style.cursor = 'grab';
+          el.classList.remove('canvas-item');
+          el.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
+          cardList.appendChild(el);
+        }
+      }
+      relayoutGroup(groupEl);
+    });
+
+    // Cards with no effective group at this level get ejected back to free-floating.
+    for (const card of tagged) {
+      if (assignment.get(card.deckCardId)) continue;
+      const el = cardEls.get(card.deckCardId);
+      if (el && el.closest('.group-container')) placeCardFree(el);
+    }
+
+    // Remove now-stale, unneeded group boxes (their cards were already moved out above).
+    cv.querySelectorAll<HTMLDivElement>(':scope > .group-container[data-tag-name]').forEach(g => {
+      if (!neededNames.has(g.dataset.tagName!)) g.remove();
+    });
+
+    // Refresh widgets (e.g. Draw Odds) so they reflect the new grouping.
+    const rawGrps = readCanvasGroups(cv);
+    const data = buildWidgetDataFromState(deckCardsRef.current, cardDetailsRef.current, rawGrps, cardStatusesRef.current);
+    refreshAllWidgets(data);
+    refreshAllWidgetDecorators();
+  }, [makeItemDraggable, attachContextMenu, placeCardFree, refreshAllWidgets, refreshAllWidgetDecorators]);
+
+  renderTagGroupsRef.current = renderTagGroups;
+
+  // Sets deckCard's tag at the current arrangement's grouping level, updating
+  // the local cache optimistically and persisting via IPC.
+  const persistCardTag = useCallback((deckCardId: number, tagName: string) => {
+    const arr = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
+    const level = arr?.grouping_level ?? 1;
+    const position = level - 1;
+    const current = deckCardTagsRef.current.get(deckCardId) || [];
+    deckCardTagsRef.current.set(deckCardId, withTagAt(current, position, tagName));
+    window.libraryAPI.setCardTagAt({ deckCardId, position, tagName }).catch(err => {
+      console.error('Failed to persist card tag:', err);
+    });
+  }, []);
+  persistCardTagRef.current = persistCardTag;
+
+  // Resolves the Case-1 ambiguous drag (card's real tag at this level -> a
+  // different real-tag group): remove/replace/insert per the user's choice.
+  const resolveTagReassign = useCallback((choice: 'remove' | 'replace' | 'insert') => {
+    const p = tagReassignPrompt;
+    if (!p) return;
+    setTagReassignPrompt(null);
+
+    const arr = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
+    const level = arr?.grouping_level ?? 1;
+    const position = level - 1;
+    const current = deckCardTagsRef.current.get(p.deckCardId) || [];
+
+    if (choice === 'remove') {
+      deckCardTagsRef.current.set(p.deckCardId, withoutTagAt(current, position));
+      window.libraryAPI.clearCardTagAt({ deckCardId: p.deckCardId, position }).catch(err => console.error('Failed to clear tag:', err));
+    } else if (choice === 'replace') {
+      deckCardTagsRef.current.set(p.deckCardId, withTagAt(current, position, p.destTag));
+      window.libraryAPI.setCardTagAt({ deckCardId: p.deckCardId, position, tagName: p.destTag }).catch(err => console.error('Failed to replace tag:', err));
+    } else {
+      // Insert dest at this position, push the current (source) tag down one slot.
+      const nextSlotTaken = current.some(t => t.position === position + 1);
+      if (nextSlotTaken) {
+        // Slot below is already occupied — cascading further is an open
+        // question (see plan); fall back to a safe replace rather than clobber.
+        deckCardTagsRef.current.set(p.deckCardId, withTagAt(current, position, p.destTag));
+        window.libraryAPI.setCardTagAt({ deckCardId: p.deckCardId, position, tagName: p.destTag }).catch(err => console.error('Failed to set tag:', err));
+      } else {
+        let next = withTagAt(current, position + 1, p.sourceTag);
+        next = withTagAt(next, position, p.destTag);
+        deckCardTagsRef.current.set(p.deckCardId, next);
+        window.libraryAPI.setCardTagAt({ deckCardId: p.deckCardId, position: position + 1, tagName: p.sourceTag }).catch(err => console.error('Failed to shift tag:', err));
+        window.libraryAPI.setCardTagAt({ deckCardId: p.deckCardId, position, tagName: p.destTag }).catch(err => console.error('Failed to set tag:', err));
+      }
+    }
+
+    renderTagGroupsRef.current?.();
+    requestAnimationFrame(() => {
+      if (p.cardEl.closest('.group-container') === p.destGroupEl) {
+        placeCardInGroupAtPosition(p.cardEl, p.destGroupEl, p.dropAt.x, p.dropAt.y, tagGroupSettingsRef);
+        relayoutGroup(p.destGroupEl);
+      }
+    });
+    scheduleAutoSave();
+  }, [tagReassignPrompt, scheduleAutoSave]);
+
   // ── Arrangements ──────────────────────────────────────────────────────────
 
   const switchArrangement = useCallback(async (arrangementId: number, saveFirst: boolean) => {
@@ -1756,7 +2192,8 @@ export function DeckView() {
     // Bring canvas in sync with the deck — any card added while on another
     // arrangement will be spawned here; any removed card won't appear.
     reconcileCanvas();
-  }, [serializeCanvas, restoreCanvas, applyT, reconcileCanvas]);
+    renderTagGroups();
+  }, [serializeCanvas, restoreCanvas, applyT, reconcileCanvas, renderTagGroups]);
 
   const loadArrangements = useCallback(async () => {
     if (!deckId) return;
@@ -1764,7 +2201,7 @@ export function DeckView() {
       let arrs = await window.libraryAPI.getArrangements({ deckId });
       if (!arrs.length) {
         const result = await window.libraryAPI.createArrangement({ deckId, name: 'Default' });
-        const newArr: Arrangement = { id: result.id, name: 'Default', canvas_json: null };
+        const newArr: Arrangement = { id: result.id, name: 'Default', canvas_json: null, grouping_level: 1 };
         // Migrate old canvas_states if present
         try {
           const old = await window.libraryAPI.loadCanvas({ deckId });
@@ -1783,6 +2220,64 @@ export function DeckView() {
       useToastStore.getState().push({ type: 'error', title: 'Failed to load canvas arrangements', message: String(err) });
     }
   }, [deckId, switchArrangement]);
+
+  // Full reload after any action that swaps the deck's live working state
+  // (switchBranch/restoreVersion materialize new deck_cards/tags/arrangements).
+  const reloadAfterCheckout = useCallback(async () => {
+    await loadDeckData();
+    await loadArrangements();
+    await loadBranches();
+    await refreshDirty();
+  }, [loadDeckData, loadArrangements, loadBranches, refreshDirty]);
+
+  const performSwitchBranch = useCallback(async (targetBranchId: number, onDirty?: 'release' | 'discard', message?: string) => {
+    setVersionsBusy(true);
+    try {
+      await window.libraryAPI.switchBranch({ deckId, targetBranchId, onDirty, message });
+      setDirtyPrompt(null);
+      setViewedBranchId(targetBranchId);
+      await reloadAfterCheckout();
+      useToastStore.getState().push({ type: 'success', title: 'Switched branch' });
+    } catch (err) {
+      if (isDeckDirtyError(err)) {
+        setDirtyPrompt({ kind: 'switch', targetBranchId });
+      } else {
+        useToastStore.getState().push({ type: 'error', title: 'Failed to switch branch', message: String(err) });
+      }
+    } finally {
+      setVersionsBusy(false);
+    }
+  }, [deckId, reloadAfterCheckout]);
+
+  const performRestoreVersion = useCallback(async (versionId: number, onDirty?: 'release' | 'discard', message?: string) => {
+    setVersionsBusy(true);
+    try {
+      await window.libraryAPI.restoreVersion({ versionId, onDirty, message });
+      setDirtyPrompt(null);
+      await reloadAfterCheckout();
+      useToastStore.getState().push({ type: 'success', title: 'Version restored' });
+    } catch (err) {
+      if (isDeckDirtyError(err)) {
+        setDirtyPrompt({ kind: 'restore', versionId });
+      } else {
+        useToastStore.getState().push({ type: 'error', title: 'Failed to restore version', message: String(err) });
+      }
+    } finally {
+      setVersionsBusy(false);
+    }
+  }, [reloadAfterCheckout]);
+
+  // Resolves the blocking dirty-switch modal: release current changes as a
+  // new version first, or discard them, then retry whichever action was
+  // pending (branch switch or version restore).
+  const resolveDirtyPrompt = useCallback((choice: 'release' | 'discard', message: string) => {
+    if (!dirtyPrompt) return;
+    if (dirtyPrompt.kind === 'switch' && dirtyPrompt.targetBranchId != null) {
+      performSwitchBranch(dirtyPrompt.targetBranchId, choice, message);
+    } else if (dirtyPrompt.kind === 'restore' && dirtyPrompt.versionId != null) {
+      performRestoreVersion(dirtyPrompt.versionId, choice, message);
+    }
+  }, [dirtyPrompt, performSwitchBranch, performRestoreVersion]);
 
   // ── Canvas event setup ────────────────────────────────────────────────────
 
@@ -1980,7 +2475,7 @@ export function DeckView() {
           let dropped = false;
           cv.querySelectorAll<HTMLDivElement>('.group-container').forEach(g => {
             g.classList.remove('group-drop-highlight');
-            if (!dropped && hitTest(e, g)) { dropIntoGroup(el!, g); dropped = true; }
+            if (!dropped && hitTest(e, g)) { dropIntoGroup(el!, g, { x: e.clientX, y: e.clientY }); dropped = true; }
           });
         } else if (elType === 'card-ghost') {
           el!.style.transition = ''; el!.style.filter = ''; el!.style.transform = '';
@@ -2008,26 +2503,81 @@ export function DeckView() {
             dropped = true;
 
             if (slot && g.contains(slot)) {
-              // ── Same group: restore card at the slot's exact DOM position ──
+              // ── Same group: reorder to the cursor's drop position ──
               el!.style.cssText = ''; el!.style.cursor = 'grab';
               el!.classList.remove('canvas-item');
               el!.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2')
                 .forEach(l => l.style.display = '');
-              slot.parentElement!.insertBefore(el!, slot);
               slot.remove();
+              placeCardInGroupAtPosition(el!, g, e.clientX, e.clientY, tagGroupSettingsRef);
               relayoutGroup(g);
             } else {
-              // ── Different group ───────────────────────────────────────────
+              // ── Different group — may need the Case 1/2 tag-reassignment prompt ──
               slot?.remove();
               if (sourceGroupEl) relayoutGroup(sourceGroupEl);
-              dropIntoGroup(el!, g);
+              const deckCardId = Number(el!.dataset.entryId);
+              const sourceTag = sourceGroupEl?.dataset.tagName;
+              const destTag = g.dataset.tagName;
+              const arr = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
+              const level = arr?.grouping_level ?? 1;
+              const sourceIsReal = deckCardId && sourceTag
+                ? computeEffectiveGroups([{ deckCardId, tags: deckCardTagsRef.current.get(deckCardId) || [] }], level).get(deckCardId)?.isRealAtLevel
+                : false;
+
+              if (sourceIsReal && sourceTag && destTag && deckCardId) {
+                // Case 1: ambiguous — ask the user, don't move anything yet.
+                let cardName = deckCardId;
+                try { cardName = (JSON.parse(el!.dataset.cardJson || '{}').name) || deckCardId; } catch {}
+                setTagReassignPrompt({
+                  cardEl: el!, deckCardId, cardName: String(cardName),
+                  sourceTag, destTag, destGroupEl: g,
+                  dropAt: { x: e.clientX, y: e.clientY },
+                });
+                // Leave the card visually back in its source group until resolved.
+                if (sourceGroupEl) {
+                  sourceGroupEl.querySelector('.card-list')!.appendChild(el!);
+                  el!.style.cssText = ''; el!.style.cursor = 'grab';
+                  el!.classList.remove('canvas-item');
+                  el!.querySelectorAll<HTMLElement>('.card-layer-1,.card-layer-2').forEach(l => l.style.display = '');
+                  relayoutGroup(sourceGroupEl);
+                }
+              } else {
+                // Case 2 (fallback tag) or free-floating source: unambiguous.
+                dropIntoGroup(el!, g, { x: e.clientX, y: e.clientY });
+                // The source group may now be empty (its last card just left) —
+                // let renderTagGroups reconcile so an empty box doesn't linger.
+                if (sourceGroupEl) renderTagGroupsRef.current?.();
+              }
             }
           });
 
           if (!dropped) {
             // ── Canvas drop: card stays on canvas at ghost's final position ──
             slot?.remove();
-            if (sourceGroupEl) relayoutGroup(sourceGroupEl);
+            if (sourceGroupEl) {
+              relayoutGroup(sourceGroupEl);
+              const deckCardId = Number(el!.dataset.entryId);
+              const sourceTag = sourceGroupEl.dataset.tagName;
+              const arr = arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current);
+              const level = arr?.grouping_level ?? 1;
+              const position = level - 1;
+              if (deckCardId && sourceTag) {
+                const current = deckCardTagsRef.current.get(deckCardId) || [];
+                const isRealHere = current.some(t => t.position === position && !t.isPlaceholder && t.tagName === sourceTag);
+                if (isRealHere) {
+                  // Leaving the group onto open canvas removes the tag at
+                  // this position — the card becomes free-floating here.
+                  deckCardTagsRef.current.set(deckCardId, withoutTagAt(current, position));
+                  window.libraryAPI.clearCardTagAt({ deckCardId, position }).catch(err => console.error('Failed to clear tag:', err));
+                } else {
+                  // Card was only here via fallback (no real tag at this exact
+                  // level) — opt it out here explicitly, nothing to demote.
+                  deckCardTagsRef.current.set(deckCardId, withPlaceholderAt(current, position));
+                  window.libraryAPI.setCardTagAt({ deckCardId, position, tagName: null, isPlaceholder: true }).catch(err => console.error('Failed to set gap:', err));
+                }
+                renderTagGroupsRef.current?.();
+              }
+            }
             el!.style.transition = '';
             el!.style.opacity    = '';
             el!.style.filter     = '';
@@ -2117,7 +2667,7 @@ export function DeckView() {
         const snap = undoStackRef.current.pop();
         if (snap && canvasRef.current) {
           redoStackRef.current.push(JSON.stringify(serializeCanvas()));
-          try { restoreCanvas(JSON.parse(snap)); } catch {}
+          try { restoreCanvas(JSON.parse(snap)); reconcileCanvas(); renderTagGroups(); } catch {}
           scheduleAutoSave();
         }
       }
@@ -2126,7 +2676,7 @@ export function DeckView() {
         const snap = redoStackRef.current.pop();
         if (snap && canvasRef.current) {
           undoStackRef.current.push(JSON.stringify(serializeCanvas()));
-          try { restoreCanvas(JSON.parse(snap)); } catch {}
+          try { restoreCanvas(JSON.parse(snap)); reconcileCanvas(); renderTagGroups(); } catch {}
           scheduleAutoSave();
         }
       }
@@ -2146,7 +2696,7 @@ export function DeckView() {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('keyup', onKeyUp);
     };
-  }, [applyT, zoomAt, s2c, clearSel, selectEl, syncSelCount, dropIntoGroup, scheduleAutoSave, pushUndoSnapshot, serializeCanvas, restoreCanvas]);
+  }, [applyT, zoomAt, s2c, clearSel, selectEl, syncSelCount, dropIntoGroup, scheduleAutoSave, pushUndoSnapshot, serializeCanvas, restoreCanvas, reconcileCanvas, renderTagGroups]);
 
   // ── AI event listeners ────────────────────────────────────────────────────
 
@@ -2268,6 +2818,14 @@ export function DeckView() {
   // Alias: detail panel uses the same add path so both callers get error-toast handling
   const handleAddFromDetail = handleAddCard;
 
+  // Tag mutations from the chip editor persist straight to the DB via their
+  // own IPC call, bypassing deckCardTagsRef — so the cache must be refetched
+  // before re-rendering, or groups render against stale (pre-edit) tag data.
+  const handleTagsChanged = useCallback(() => {
+    if (!deckId) return;
+    loadDeckTags(deckId).then(() => renderTagGroupsRef.current?.());
+  }, [deckId, loadDeckTags]);
+
   // Add all search results to the deck and spawn each on the canvas
   const handleAddAll = async (cards: Card[]): Promise<void> => {
     if (!deckId) return;
@@ -2339,38 +2897,26 @@ export function DeckView() {
     setTimeout(() => setExportFlash(false), 2000);
   };
 
+  // A group only exists because a real card carries its tag — no orphan
+  // boxes. Creation is gated on either a pre-selected canvas card or a
+  // type/oracle filter that will actually match something.
+  const groupHasSeed = (pendingGroupFromSelRef.current?.size ?? 0) > 0
+    || (groupPreSelect === 'type' && groupPreSelectTypeTags.length > 0)
+    || (groupPreSelect === 'oracle' && groupPreSelectOracleTags.length > 0);
+
   const handleAddGroup = () => {
-    const r = viewportRef.current!.getBoundingClientRect();
-    const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
-    const g = makeGroupEl(groupName.trim() || 'New Group', groupColor);
-    g.style.cssText = `left:${cp.x - 210}px;top:${cp.y - 80}px;z-index:10;border-color:${groupColor}55;`;
-    canvasRef.current!.appendChild(g);
-    makeItemDraggable(g, 'group');
-    attachContextMenu(g);
-    g.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const btnR = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const wvR = viewportRef.current!.getBoundingClientRect();
-      setGroupMenu({ top: btnR.top - wvR.top, left: btnR.right - wvR.left + 6, groupEl: g });
-    });
-
+    if (!groupHasSeed) return;
     const pending = pendingGroupFromSelRef.current;
-    if (pending && pending.size > 0) {
-      pending.forEach(cardEl => {
-        if (canvasRef.current!.contains(cardEl)) dropIntoGroup(cardEl, g);
-      });
-      pendingGroupFromSelRef.current = null;
-      clearSel();
-      setGroupModalOpen(false);
-      scheduleAutoSave();
-      return;
-    }
-
     const hasTags = groupPreSelect === 'type' ? groupPreSelectTypeTags.length > 0
                   : groupPreSelect === 'oracle' ? groupPreSelectOracleTags.length > 0
                   : false;
+    const usingFilter = !(pending && pending.size > 0) && groupPreSelect !== 'none' && hasTags;
 
-    if (groupPreSelect !== 'none' && hasTags && canvasRef.current) {
+    // Resolve type/oracle matches BEFORE creating anything — a filter that
+    // matches nothing must not spawn an empty group.
+    let freeMatches: HTMLDivElement[] = [];
+    let conflictMap = new Map<HTMLDivElement, HTMLDivElement[]>();
+    if (usingFilter && canvasRef.current) {
       const matchCard = (oid: string): boolean => {
         const det = cardDetails[oid];
         if (!det) return false;
@@ -2385,9 +2931,6 @@ export function DeckView() {
         return groupPreSelectOracleOp === 'or' ? res.some(Boolean) : res.every(Boolean);
       };
 
-      const freeMatches: HTMLDivElement[] = [];
-      const conflictMap = new Map<HTMLDivElement, HTMLDivElement[]>();
-
       for (const cardEl of Array.from(canvasRef.current.querySelectorAll<HTMLDivElement>('.card-stack[data-oracle-id]'))) {
         const oid = cardEl.dataset.oracleId!;
         if (!matchCard(oid)) continue;
@@ -2400,6 +2943,45 @@ export function DeckView() {
         }
       }
 
+      if (freeMatches.length === 0 && conflictMap.size === 0) {
+        setGroupCreateError('No cards match this filter yet — nothing to create a group from.');
+        return;
+      }
+    }
+    setGroupCreateError(null);
+
+    const r = viewportRef.current!.getBoundingClientRect();
+    const cp = s2c(r.left + r.width / 2, r.top + r.height / 2);
+    const tagName = groupName.trim() || 'New Group';
+    const g = makeGroupEl(tagName, groupColor);
+    g.dataset.tagName = tagName;
+    g.style.cssText = `left:${cp.x - 210}px;top:${cp.y - 80}px;z-index:10;border-color:${groupColor}55;`;
+    canvasRef.current!.appendChild(g);
+    // A group IS a tag definition — register its color immediately, even
+    // before any card is assigned to it.
+    tagColorsRef.current.set(tagName, groupColor);
+    if (deckId) window.libraryAPI.setTagColor({ deckId, tagName, color: groupColor }).catch(() => {});
+    makeItemDraggable(g, 'group');
+    attachContextMenu(g);
+    g.querySelector<HTMLButtonElement>('[data-group-menu-btn]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btnR = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const wvR = viewportRef.current!.getBoundingClientRect();
+      setGroupMenu({ top: btnR.top - wvR.top, left: btnR.right - wvR.left + 6, groupEl: g });
+    });
+
+    if (pending && pending.size > 0) {
+      pending.forEach(cardEl => {
+        if (canvasRef.current!.contains(cardEl)) dropIntoGroup(cardEl, g);
+      });
+      pendingGroupFromSelRef.current = null;
+      clearSel();
+      setGroupModalOpen(false);
+      scheduleAutoSave();
+      return;
+    }
+
+    if (usingFilter) {
       if (conflictMap.size > 0) {
         const conflicts: PreSelectConflict[] = Array.from(conflictMap.entries()).map(([groupEl, cards]) => ({
           groupEl,
@@ -2431,13 +3013,23 @@ export function DeckView() {
     if (!preSelectConfirm) return;
     const { newGroupEl: g, freeCards, conflicts } = preSelectConfirm;
     pushUndoSnapshot();
-    for (const cardEl of freeCards) dropIntoGroup(cardEl, g);
+    let placed = 0;
+    for (const cardEl of freeCards) { dropIntoGroup(cardEl, g); placed++; }
     for (const conflict of conflicts) {
       for (const card of conflict.cards) {
-        if (preSelectConfirmSel.has(card.el)) dropIntoGroup(card.el, g);
+        if (preSelectConfirmSel.has(card.el)) { dropIntoGroup(card.el, g); placed++; }
       }
     }
     setPreSelectConfirm(null);
+    if (placed === 0) {
+      // User deselected every matched card in the conflict picker — don't
+      // leave the still-born group box behind. Mirrors handleCancelPreSelect:
+      // only remove the DOM box, don't touch the tag by name (`deleteTagFromDeck`
+      // is deck-wide — if this name collided with an existing, populated tag
+      // elsewhere in the deck, that would wipe it out too).
+      g.remove();
+      return;
+    }
     scheduleAutoSave();
   };
 
@@ -2509,7 +3101,7 @@ export function DeckView() {
 
   // Keep always-fresh refs so the stable canvas effect can call current handlers
   handleAddStickerRef.current  = handleAddSticker;
-  openGroupModalRef.current    = () => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); };
+  openGroupModalRef.current    = () => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); setGroupCreateError(null); };
   openWidgetPickerRef.current  = () => setWidgetPickerOpen(true);
   reconcileCanvasRef.current   = reconcileCanvas;
 
@@ -2529,6 +3121,7 @@ export function DeckView() {
     setGroupPreSelectTypeDraft('');
     setGroupPreSelectOracleTags([]);
     setGroupPreSelectOracleDraft('');
+    setGroupCreateError(null);
   };
 
   // "Delete / Remove from Deck" from multi-selection: removes all selected
@@ -2624,6 +3217,24 @@ export function DeckView() {
       input.replaceWith(document.createTextNode(newName + ' '));
       if (badge) h3.appendChild(badge);
       g.dataset.name = newName;
+      const oldTagName = g.dataset.tagName || name;
+      g.dataset.tagName = newName;
+      if (deckId && newName !== oldTagName) {
+        const color = tagColorsRef.current.get(oldTagName);
+        if (color) tagColorsRef.current.set(newName, color);
+        tagColorsRef.current.delete(oldTagName);
+        window.libraryAPI.renameTagInDeck({ deckId, oldName: oldTagName, newName }).catch(err => {
+          console.error('Failed to rename tag:', err);
+        });
+        // Keep the local tag cache in sync so a re-render doesn't briefly show the old name.
+        deckCardTagsRef.current.forEach((tags, id) => {
+          deckCardTagsRef.current.set(id, tags.map(t => t.tagName === oldTagName ? { ...t, tagName: newName } : t));
+        });
+        if (tagGroupSettingsRef.current[oldTagName]) {
+          tagGroupSettingsRef.current[newName] = tagGroupSettingsRef.current[oldTagName];
+          delete tagGroupSettingsRef.current[oldTagName];
+        }
+      }
       scheduleAutoSave();
     };
     input.addEventListener('blur', commit, { once: true });
@@ -2642,6 +3253,11 @@ export function DeckView() {
     g.style.borderColor = color + '55';
     if (dot) { dot.style.background = color; dot.style.boxShadow = `0 0 8px ${color}55`; }
     g.dataset.color = color;
+    const tagName = g.dataset.tagName || g.dataset.name;
+    if (deckId && tagName) {
+      tagColorsRef.current.set(tagName, color);
+      window.libraryAPI.setTagColor({ deckId, tagName, color }).catch(err => console.error('Failed to set tag color:', err));
+    }
     setGroupMenu(m => m ? { ...m } : null); // refresh to update swatch highlights
     scheduleAutoSave();
   };
@@ -2649,9 +3265,18 @@ export function DeckView() {
   const handleGroupDelete = () => {
     if (!groupMenu) return;
     const g = groupMenu.groupEl;
+    const tagName = g.dataset.tagName || g.dataset.name;
     // Eject all cards to free canvas items — they stay in the deck
     g.querySelectorAll<HTMLDivElement>('.card-stack').forEach(cardEl => placeCardFree(cardEl));
     g.remove();
+    if (deckId && tagName) {
+      tagColorsRef.current.delete(tagName);
+      delete tagGroupSettingsRef.current[tagName];
+      deckCardTagsRef.current.forEach((tags, id) => {
+        deckCardTagsRef.current.set(id, tags.filter(t => t.tagName !== tagName));
+      });
+      window.libraryAPI.deleteTagFromDeck({ deckId, tagName }).catch(err => console.error('Failed to delete tag:', err));
+    }
     setGroupMenu(null);
     scheduleAutoSave();
   };
@@ -2692,7 +3317,7 @@ export function DeckView() {
     }
     const name = `Arrangement ${arrangementsCacheRef.current.length + 1}`;
     const result = await window.libraryAPI.createArrangement({ deckId, name });
-    const newArr: Arrangement = { id: result.id, name, canvas_json: null };
+    const newArr: Arrangement = { id: result.id, name, canvas_json: null, grouping_level: 1 };
     arrangementsCacheRef.current.push(newArr);
     setArrangements([...arrangementsCacheRef.current]);
     await switchArrangement(result.id, false);
@@ -2716,6 +3341,18 @@ export function DeckView() {
     arr.name = newName;
     setArrangements([...arrangementsCacheRef.current]);
     try { await window.libraryAPI.renameArrangement({ id: arrId, name: newName }); } catch {}
+  };
+
+  const handleChangeGroupingLevel = async (delta: number) => {
+    const arrId = currentArrangementIdRef.current;
+    if (!arrId) return;
+    const arr = arrangementsCacheRef.current.find(a => a.id === arrId);
+    if (!arr) return;
+    const level = Math.max(1, (arr.grouping_level ?? 1) + delta);
+    arr.grouping_level = level;
+    setArrangements([...arrangementsCacheRef.current]);
+    renderTagGroupsRef.current?.();
+    try { await window.libraryAPI.setArrangementGroupingLevel({ id: arrId, groupingLevel: level }); } catch {}
   };
 
   // Fix #3: tab switch no longer triggers a full reload — state is kept current by optimistic updates
@@ -2844,26 +3481,6 @@ export function DeckView() {
   }, [deckCards, cardDetails, refreshAllDecoratorOverlays, refreshAllWidgetDecorators]);
   const totalCards = deckCards.reduce((s, c) => s + (c.quantity || 1), 0);
 
-  // ── Deck price & ownership stats ──────────────────────────────────────────
-  const deckTotalPrice = (() => {
-    let total = 0;
-    for (const dc of deckCards) {
-      const usd = parseFloat((cardDetails[dc.oracle_id]?.full_data as any)?.prices?.usd || '0');
-      if (usd > 0) total += usd * (dc.quantity || 1);
-    }
-    return total;
-  })();
-
-  const ownershipStats = (() => {
-    const main = deckCards.filter(dc => dc.board !== 'sideboard');
-    let owned = 0;
-    for (const dc of main) {
-      const st = cardStatuses[dc.oracle_id];
-      if (st && st !== 'missing') owned++;
-    }
-    return { owned, total: main.length, pct: main.length > 0 ? Math.round((owned / main.length) * 100) : 0 };
-  })();
-
   // ── Combo detection ───────────────────────────────────────────────────────
   type ComboResult = { id: string; cards: string[]; results: string[]; description: string; identity: string };
   const [combos, setCombos] = useState<ComboResult[]>([]);
@@ -2969,26 +3586,18 @@ export function DeckView() {
                   {FORMAT_LABELS[deck.format] || deck.format}
                 </span>
               )}
-              <button
-                onClick={() => setDeckSettingsOpen(true)}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:bg-white/5 hover:text-on-surface-variant transition-all no-drag"
-              >
-                <span className="material-symbols-outlined text-[16px]">settings</span>
-              </button>
-              <button
-                onClick={() => setImportOpen(true)}
-                title="Import decklist"
-                className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:bg-white/5 hover:text-on-surface-variant transition-all no-drag"
-              >
-                <span className="material-symbols-outlined text-[16px]">file_upload</span>
-              </button>
               <div className="relative">
                 <button
-                  onClick={handleExport}
-                  title="Export to clipboard"
+                  ref={deckMenuBtnRef}
+                  onClick={() => {
+                    if (deckMenuAnchor) { setDeckMenuAnchor(null); return; }
+                    const r = deckMenuBtnRef.current?.getBoundingClientRect();
+                    if (r) setDeckMenuAnchor({ top: r.bottom + 4, left: r.left });
+                  }}
+                  title="Deck options"
                   className="w-7 h-7 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:bg-white/5 hover:text-on-surface-variant transition-all no-drag"
                 >
-                  <span className="material-symbols-outlined text-[16px]">{exportFlash ? 'check' : 'file_download'}</span>
+                  <span className="material-symbols-outlined text-[16px]">settings</span>
                 </button>
                 {exportError && (
                   <div className="absolute top-9 left-1/2 -translate-x-1/2 z-50 whitespace-nowrap px-3 py-1.5 rounded-lg bg-surface-container shadow-xl border border-white/10 text-[11px] text-on-surface-variant">
@@ -2996,43 +3605,10 @@ export function DeckView() {
                   </div>
                 )}
               </div>
-              <button
-                onClick={toggleAI}
-                title="Karn AI"
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md transition-all no-drag text-[12px] font-semibold"
-                style={aiOpen
-                  ? { background: 'rgba(242,202,131,0.15)', color: '#f2ca83', border: '1px solid rgba(242,202,131,0.2)' }
-                  : { color: 'rgba(242,202,131,0.5)', border: '1px solid rgba(242,202,131,0.1)' }
-                }
-              >
-                <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>auto_awesome</span>
-                Karn
-              </button>
             </div>
           </div>
 
-          {/* Deck stats chips */}
-          {!isLoading && deckCards.length > 0 && (
-            <div className="flex items-center gap-3 mr-4">
-              {deckTotalPrice > 0 && (
-                <span className="text-[11px] font-bold tabular-nums text-on-surface-variant/60" title="Estimated deck value (USD, non-foil)">
-                  ${deckTotalPrice.toFixed(2)}
-                </span>
-              )}
-              {ownershipStats.total > 0 && (
-                <button
-                  className="text-[11px] font-bold tabular-nums hover:opacity-75 transition-opacity"
-                  title={`${ownershipStats.owned} of ${ownershipStats.total} cards owned — click to see missing`}
-                  style={{ color: ownershipStats.pct >= 80 ? '#4ade80' : ownershipStats.pct >= 50 ? '#f2ca83' : 'rgba(255,255,255,0.35)' }}
-                  onClick={() => missingCards.length > 0 && handleTabChange('missing')}
-                >
-                  {ownershipStats.pct}% owned
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Workshop / List / Missing tab toggle */}
+          {/* Workshop / List / Versions tab toggle */}
           <div className="bg-surface-container-highest rounded-lg p-0.5 flex items-center">
             <button
               onClick={() => handleTabChange('workshop')}
@@ -3046,21 +3622,20 @@ export function DeckView() {
             >
               <span className="material-symbols-outlined text-[16px]">list</span>List
             </button>
-            {missingCards.length > 0 && (
-              <button
-                onClick={() => handleTabChange('missing')}
-                className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'missing' ? 'bg-surface-container-high text-red-400 font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
-              >
-                <span className="material-symbols-outlined text-[16px]">shopping_cart</span>
-                Missing
+            <button
+              onClick={() => handleTabChange('versions')}
+              className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'versions' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">commit</span>
+              Versions
+              {isDirty && (
                 <span
-                  className="text-[9px] font-black px-1.5 rounded-full"
-                  style={{ background: tab === 'missing' ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)', color: tab === 'missing' ? '#f87171' : 'rgba(255,255,255,0.35)' }}
-                >
-                  {missingCards.length}
-                </span>
-              </button>
-            )}
+                  className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                  style={{ background: '#f87171' }}
+                  title="Unreleased local changes"
+                />
+              )}
+            </button>
             <button
               onClick={() => handleTabChange('combos')}
               className={`px-3 py-1 rounded-md font-medium text-label-md flex items-center gap-1.5 transition-all ${tab === 'combos' ? 'bg-surface-container-high text-primary font-bold' : 'text-on-surface-variant hover:text-on-surface'}`}
@@ -3112,6 +3687,29 @@ export function DeckView() {
             >
               <span className="material-symbols-outlined text-[16px]">add</span>
             </button>
+
+            {/* Grouping-level stepper — which tag priority this arrangement groups by */}
+            {currentArrangement && (
+              <div className="flex items-center gap-1 flex-shrink-0 ml-2 pl-2 border-l border-white/5" title="Which tag priority this arrangement groups cards by (1st, 2nd, 3rd tag...)">
+                <span className="text-[9px] uppercase tracking-widest text-on-surface-variant/25 font-bold">Group by</span>
+                <button
+                  onClick={() => handleChangeGroupingLevel(-1)}
+                  disabled={(currentArrangement.grouping_level ?? 1) <= 1}
+                  className="w-5 h-5 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-on-surface-variant hover:bg-white/5 disabled:opacity-20 disabled:hover:bg-transparent transition-all"
+                >
+                  <span className="material-symbols-outlined text-[13px]">remove</span>
+                </button>
+                <span className="text-[10px] font-bold text-on-surface-variant/70 w-14 text-center tabular-nums">
+                  {ordinal(currentArrangement.grouping_level ?? 1)} tag
+                </span>
+                <button
+                  onClick={() => handleChangeGroupingLevel(1)}
+                  className="w-5 h-5 rounded flex items-center justify-center text-on-surface-variant/40 hover:text-on-surface-variant hover:bg-white/5 transition-all"
+                >
+                  <span className="material-symbols-outlined text-[13px]">add</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -3160,7 +3758,7 @@ export function DeckView() {
               </ToolbarTooltip>
               <ToolbarTooltip label="Add Group" shortcut="G">
                 <button
-                  onClick={() => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); }}
+                  onClick={() => { setGroupModalOpen(true); setGroupName(''); setGroupPreSelect('none'); setGroupPreSelectTypeTags([]); setGroupPreSelectTypeDraft(''); setGroupPreSelectOracleTags([]); setGroupPreSelectOracleDraft(''); setGroupCreateError(null); }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-on-surface-variant hover:bg-white/5 hover:text-primary transition-all text-label-md font-bold"
                 >
                   <span className="material-symbols-outlined text-[16px]">folder_open</span>Group
@@ -3380,6 +3978,17 @@ export function DeckView() {
                     </button>
                   </div>
 
+                  {/* Tags */}
+                  <div className="border-t border-white/5 mt-1 px-3 pt-2 pb-1">
+                    <button
+                      onClick={() => { setCardMenu(null); setDetailOracleId(cardMenu.oracleId); }}
+                      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-label-md transition-all text-on-surface-variant hover:bg-white/5 hover:text-on-surface"
+                    >
+                      <span className="material-symbols-outlined text-[15px]">sell</span>
+                      Edit tags…
+                    </button>
+                  </div>
+
                   {/* Proxy */}
                   <div className="border-t border-white/5 mt-1 px-3 pt-2 pb-1">
                     <button
@@ -3582,13 +4191,6 @@ export function DeckView() {
                   {/* Mana base analysis */}
                   {deck?.format === 'commander' && (() => {
                     const COLORS = ['W','U','B','R','G'] as const;
-                    const COLOR_META: Record<string, { name: string; bg: string; text: string }> = {
-                      W: { name: 'White', bg: '#f0d870', text: '#1a1200' },
-                      U: { name: 'Blue',  bg: '#4a7cc9', text: '#fff'   },
-                      B: { name: 'Black', bg: '#5a5a5a', text: '#fff'   },
-                      R: { name: 'Red',   bg: '#c0392b', text: '#fff'   },
-                      G: { name: 'Green', bg: '#27ae60', text: '#fff'   },
-                    };
                     // Count pips per color across non-land spells
                     const pipCount: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0 };
                     let totalNonLandSpells = 0;
@@ -3645,7 +4247,6 @@ export function DeckView() {
                         </div>
                         <div className="grid gap-2">
                           {activeColors.map(c => {
-                            const meta = COLOR_META[c];
                             const pips = pipCount[c];
                             const rec  = recSources(pips);
                             const have = landSources[c];
@@ -3653,15 +4254,9 @@ export function DeckView() {
                             const status = delta >= 0 ? 'ok' : delta >= -2 ? 'low' : 'critical';
                             return (
                               <div key={c} className="flex items-center gap-3">
-                                <div
-                                  className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black flex-shrink-0"
-                                  style={{ background: meta.bg, color: meta.text }}
-                                >
-                                  {c}
-                                </div>
                                 <div className="flex-1">
                                   <div className="flex items-center justify-between mb-0.5">
-                                    <span className="text-[10px] text-on-surface/60">{pips} pip{pips !== 1 ? 's' : ''}</span>
+                                    <span className="text-[10px] text-on-surface/60">{c}: {pips} pip{pips !== 1 ? 's' : ''}</span>
                                     <span
                                       className="text-[10px] font-bold"
                                       style={{ color: status === 'ok' ? '#4ade80' : status === 'low' ? '#fbbf24' : '#f87171' }}
@@ -3838,94 +4433,261 @@ export function DeckView() {
           </div>
 
           {/* Card search panel — absolute within canvas area, below header/arrangement bar */}
-          {/* Missing cards panel */}
-          {tab === 'missing' && (
-            <div className="absolute inset-0 overflow-y-auto bg-background">
-              <div className="max-w-3xl mx-auto px-8 py-6">
-                {/* Header */}
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h2 className="font-headline-md text-lg text-on-surface font-bold">Missing Cards</h2>
-                    <p className="text-[11px] text-on-surface-variant/45 mt-0.5">
-                      {missingCards.length} card{missingCards.length !== 1 ? 's' : ''} not in your collection
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xl font-black tabular-nums" style={{ color: '#f87171' }}>
-                      ${missingCards.reduce((s, c) => s + c.totalUsd, 0).toFixed(2)}
+          {/* ── Versions panel ── */}
+          {tab === 'versions' && (() => {
+            const viewedBranch = branches.find(b => b.id === viewedBranchId) || null;
+            const activeBranch = branches.find(b => b.is_active) || null;
+            const isViewingActive = !!viewedBranch && !!activeBranch && viewedBranch.id === activeBranch.id;
+            return (
+              <div className="absolute inset-0 overflow-y-auto bg-background">
+                <div className="max-w-3xl mx-auto px-8 py-6">
+                  {/* Header */}
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h2 className="font-headline-md text-lg text-on-surface font-bold">Versions</h2>
+                      <p className="text-[11px] text-on-surface-variant/45 mt-0.5">
+                        Branches are independent, linear release histories — they never merge back together.
+                      </p>
                     </div>
-                    <div className="text-[10px] text-on-surface-variant/35 mt-0.5">estimated cost to complete</div>
+                    {isViewingActive && (
+                      <div className="relative">
+                        <button
+                          onClick={() => setReleasePopoverOpen(o => !o)}
+                          disabled={!isDirty || versionsBusy}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all text-[11px] font-bold disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">save</span>
+                          {isDirty ? 'Release New Version' : 'No unreleased changes'}
+                        </button>
+                        {releasePopoverOpen && (
+                          <div className="absolute right-0 top-full mt-2 w-72 p-3 rounded-xl bg-surface-container-high border border-white/10 shadow-2xl z-20">
+                            <label className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/50">Release message (optional)</label>
+                            <textarea
+                              value={releaseMessage}
+                              onChange={e => setReleaseMessage(e.target.value)}
+                              rows={2}
+                              placeholder="What changed?"
+                              className="w-full mt-1.5 px-2.5 py-1.5 rounded-lg bg-surface border border-white/10 text-[12px] text-on-surface resize-none focus:outline-none focus:border-primary/40"
+                            />
+                            <div className="flex justify-end gap-2 mt-2">
+                              <button onClick={() => setReleasePopoverOpen(false)} className="px-2.5 py-1 rounded-md text-[11px] font-bold text-on-surface-variant hover:text-on-surface">Cancel</button>
+                              <button
+                                onClick={() => activeBranch && handleReleaseVersion(activeBranch.id, releaseMessage)}
+                                disabled={versionsBusy}
+                                className="px-2.5 py-1 rounded-md text-[11px] font-bold bg-primary text-on-primary hover:opacity-90 disabled:opacity-50"
+                              >
+                                Release
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
 
-                {/* Action bar */}
-                <div className="flex items-center gap-2 mb-5">
-                  <button
-                    onClick={() => handleExportMissing(false)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container border border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all text-[11px] font-bold"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">content_copy</span>Copy List
-                  </button>
-                  <button
-                    onClick={handleAddMissingToWishlist}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all text-[11px] font-bold"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">bookmark_add</span>Add All to Wishlist
-                  </button>
-                </div>
-
-                {/* Card table */}
-                <div className="rounded-xl border border-white/5 overflow-hidden">
-                  <div className="grid text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/30 px-4 py-2 border-b border-white/5" style={{ gridTemplateColumns: '1fr 140px 80px 72px' }}>
-                    <span>Card</span><span>Type</span><span className="text-right">Price</span><span className="text-right">Action</span>
+                  {/* Branch strip */}
+                  <div className="flex items-center gap-2 mb-6 flex-wrap">
+                    {branches.map(b => (
+                      <div key={b.id} className="group relative">
+                        <button
+                          onClick={() => {
+                            setViewedBranchId(b.id);
+                            if (!b.is_active) performSwitchBranch(b.id);
+                          }}
+                          disabled={versionsBusy}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-all ${
+                            b.id === viewedBranchId
+                              ? 'bg-primary/10 border-primary/30 text-primary'
+                              : 'bg-surface-container border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="material-symbols-outlined text-[13px]">{b.is_root ? 'home' : 'call_split'}</span>
+                          {b.name}
+                          <span className="text-[9px] font-black px-1.5 rounded-full" style={{ background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.35)' }}>
+                            v{b.tip_version_number}
+                          </span>
+                          {b.is_active && (
+                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#4ade80' }} title="Currently checked out" />
+                          )}
+                          {b.is_active && b.is_dirty && (
+                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: '#f87171' }} title="Unreleased local changes" />
+                          )}
+                        </button>
+                        {!b.is_root && !b.is_active && (
+                          <button
+                            onClick={() => handleDeleteBranch(b)}
+                            title="Delete branch"
+                            className="absolute -right-1.5 -top-1.5 w-4 h-4 rounded-full bg-surface-container-high border border-white/10 text-on-surface-variant/50 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                          >
+                            <span className="material-symbols-outlined text-[10px]">close</span>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => {
+                        const tip = viewedBranch ? versions[0] : null;
+                        if (tip) setNewBranchModal({ sourceVersionId: tip.id, sourceLabel: `${viewedBranch!.name} v${tip.version_number}` });
+                      }}
+                      disabled={!viewedBranch || !versions.length}
+                      title={versions.length ? 'Create a new branch from this branch\'s latest version' : 'Release a version on this branch first'}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-white/10 text-on-surface-variant/60 hover:text-on-surface hover:border-white/25 transition-all text-[11px] font-bold disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">add</span>New Branch
+                    </button>
                   </div>
-                  {missingCards.map(({ dc, detail, usd }) => {
-                    const name = detail?.name || dc.oracle_id;
-                    const artUrl = (() => {
-                      const fd = (detail?.full_data || {}) as Record<string, any>;
-                      return fd.image_uris?.art_crop || fd.card_faces?.[0]?.image_uris?.art_crop || '';
-                    })();
-                    return (
-                      <div
-                        key={dc.id}
-                        className="grid items-center px-4 py-2.5 border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors group"
-                        style={{ gridTemplateColumns: '1fr 140px 80px 72px' }}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          {artUrl && (
-                            <div className="w-10 h-7 rounded overflow-hidden flex-shrink-0">
-                              <img src={artUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
+
+                  {/* Version timeline for the viewed branch */}
+                  <div className="rounded-xl border border-white/5 overflow-hidden">
+                    <div className="grid text-[9px] font-bold uppercase tracking-widest text-on-surface-variant/30 px-4 py-2 border-b border-white/5" style={{ gridTemplateColumns: '56px 1fr 140px 150px' }}>
+                      <span>Ver.</span><span>Message</span><span>Cards</span><span className="text-right">Actions</span>
+                    </div>
+                    {versionsLoading && (
+                      <div className="px-4 py-6 text-center text-[11px] text-on-surface-variant/40">Loading versions…</div>
+                    )}
+                    {!versionsLoading && versions.length === 0 && (
+                      <div className="px-4 py-6 text-center text-[11px] text-on-surface-variant/40">
+                        Nothing released yet on this branch. {isViewingActive ? 'Make some changes and release your first version.' : ''}
+                      </div>
+                    )}
+                    {versions.map((v, idx) => {
+                      const prevInBranch = versions[idx + 1];
+                      const compareToId = prevInBranch ? prevInBranch.id : (viewedBranch?.parent_version_id ?? null);
+                      const isExpanded = diffPanel?.versionId === v.id;
+                      return (
+                        <div key={v.id} className="border-b border-white/[0.04] last:border-b-0">
+                          <div className="grid items-center px-4 py-2.5 hover:bg-white/[0.02] transition-colors" style={{ gridTemplateColumns: '56px 1fr 140px 150px' }}>
+                            <span className="text-[12px] font-bold text-on-surface tabular-nums">v{v.version_number}</span>
+                            <div className="min-w-0">
+                              <div className="text-[12px] text-on-surface truncate">{v.message || <span className="text-on-surface-variant/35 italic">No message</span>}</div>
+                              <div className="text-[10px] text-on-surface-variant/35">{new Date(v.created_at).toLocaleString()}</div>
+                            </div>
+                            <span className="text-[11px] text-on-surface-variant/50 tabular-nums">{v.card_count} cards</span>
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => isExpanded ? setDiffPanel(null) : handleViewDiff(v.id, compareToId, `v${v.version_number}`)}
+                                disabled={compareToId == null}
+                                title={compareToId == null ? 'Nothing before this version to compare' : 'View changes vs. previous version'}
+                                className="px-2 py-1 rounded-md text-[10px] font-bold text-on-surface-variant hover:text-on-surface hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                              >
+                                Changes
+                              </button>
+                              <button
+                                onClick={() => setNewBranchModal({ sourceVersionId: v.id, sourceLabel: `${viewedBranch?.name} v${v.version_number}` })}
+                                title="Branch from here"
+                                className="w-6 h-6 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:text-primary hover:bg-primary/10"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">call_split</span>
+                              </button>
+                              <button
+                                onClick={() => performRestoreVersion(v.id)}
+                                disabled={versionsBusy}
+                                title="Restore this version as the live working state"
+                                className="w-6 h-6 rounded-md flex items-center justify-center text-on-surface-variant/50 hover:text-primary hover:bg-primary/10 disabled:opacity-30"
+                              >
+                                <span className="material-symbols-outlined text-[14px]">restore</span>
+                              </button>
+                            </div>
+                          </div>
+                          {isExpanded && (
+                            <div className="px-4 pb-3">
+                              {diffPanel?.loading && <div className="text-[11px] text-on-surface-variant/40 py-2">Loading diff…</div>}
+                              {diffPanel?.diff && (
+                                <div className="rounded-lg bg-surface-container/50 border border-white/5 p-3 space-y-1">
+                                  {diffPanel.diff.added.length === 0 && diffPanel.diff.removed.length === 0 && diffPanel.diff.changed.length === 0 && (
+                                    <div className="text-[11px] text-on-surface-variant/40">No card changes.</div>
+                                  )}
+                                  {diffPanel.diff.added.map(c => (
+                                    <div key={`add-${c.oracle_id}-${c.board}`} className="text-[11px] flex items-center gap-2" style={{ color: '#4ade80' }}>
+                                      <span className="font-black">+</span>{c.quantity}× {cardDetails[c.oracle_id]?.name || c.oracle_id}
+                                    </div>
+                                  ))}
+                                  {diffPanel.diff.removed.map(c => (
+                                    <div key={`rem-${c.oracle_id}-${c.board}`} className="text-[11px] flex items-center gap-2" style={{ color: '#f87171' }}>
+                                      <span className="font-black">−</span>{c.quantity}× {cardDetails[c.oracle_id]?.name || c.oracle_id}
+                                    </div>
+                                  ))}
+                                  {diffPanel.diff.changed.map(c => (
+                                    <div key={`chg-${c.oracle_id}-${c.board}`} className="text-[11px] flex items-center gap-2" style={{ color: '#f2ca83' }}>
+                                      <span className="font-black">~</span>{cardDetails[c.oracle_id]?.name || c.oracle_id} {c.from_quantity} → {c.to_quantity}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           )}
-                          <button
-                            className="text-[12px] font-semibold text-on-surface truncate hover:text-primary transition-colors text-left"
-                            onClick={() => setDetailOracleId(dc.oracle_id)}
-                          >
-                            {dc.quantity && dc.quantity > 1 ? `${dc.quantity}× ` : ''}{name}
-                          </button>
                         </div>
-                        <span className="text-[10px] text-on-surface-variant/35 truncate">{detail?.type_line || ''}</span>
-                        <span className="text-[12px] font-bold tabular-nums text-right" style={{ color: usd > 20 ? '#f87171' : usd > 5 ? '#f2ca83' : 'rgba(255,255,255,0.5)' }}>
-                          {usd > 0 ? `$${usd.toFixed(2)}` : '—'}
-                        </span>
-                        <div className="flex justify-end">
-                          <button
-                            onClick={() => window.libraryAPI.addToWishlist?.({ oracleId: dc.oracle_id, quantity: dc.quantity || 1 }).catch(() => {})}
-                            className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-bold transition-all"
-                            style={{ background: 'rgba(242,202,131,0.08)', border: '1px solid rgba(242,202,131,0.15)', color: 'rgba(242,202,131,0.6)' }}
-                            title="Add to wishlist"
-                          >
-                            <span className="material-symbols-outlined text-[11px]">bookmark_add</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
 
+                {/* New branch modal */}
+                {newBranchModal && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setNewBranchModal(null)}>
+                    <div className="w-96 p-5 rounded-xl bg-surface-container-high border border-white/10 shadow-2xl" onClick={e => e.stopPropagation()}>
+                      <h3 className="font-headline-sm text-on-surface font-bold mb-1">New Branch</h3>
+                      <p className="text-[11px] text-on-surface-variant/45 mb-3">Forking from {newBranchModal.sourceLabel}</p>
+                      <input
+                        autoFocus
+                        value={newBranchName}
+                        onChange={e => setNewBranchName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleCreateBranch()}
+                        placeholder="Branch name"
+                        className="w-full px-3 py-2 rounded-lg bg-surface border border-white/10 text-[13px] text-on-surface focus:outline-none focus:border-primary/40"
+                      />
+                      <div className="flex justify-end gap-2 mt-4">
+                        <button onClick={() => setNewBranchModal(null)} className="px-3 py-1.5 rounded-md text-[12px] font-bold text-on-surface-variant hover:text-on-surface">Cancel</button>
+                        <button
+                          onClick={handleCreateBranch}
+                          disabled={!newBranchName.trim() || versionsBusy}
+                          className="px-3 py-1.5 rounded-md text-[12px] font-bold bg-primary text-on-primary hover:opacity-90 disabled:opacity-50"
+                        >
+                          Create Branch
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Dirty-switch confirmation modal */}
+                {dirtyPrompt && (
+                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setDirtyPrompt(null)}>
+                    <div className="w-[420px] p-5 rounded-xl bg-surface-container-high border border-white/10 shadow-2xl" onClick={e => e.stopPropagation()}>
+                      <h3 className="font-headline-sm text-on-surface font-bold mb-1">Unreleased changes</h3>
+                      <p className="text-[12px] text-on-surface-variant/60 mb-3">
+                        This branch has local changes that haven't been released yet. Release them as a new version first, or discard them?
+                      </p>
+                      <textarea
+                        value={releaseMessage}
+                        onChange={e => setReleaseMessage(e.target.value)}
+                        rows={2}
+                        placeholder="Release message (optional)"
+                        className="w-full px-2.5 py-1.5 rounded-lg bg-surface border border-white/10 text-[12px] text-on-surface resize-none focus:outline-none focus:border-primary/40"
+                      />
+                      <div className="flex justify-end gap-2 mt-4">
+                        <button onClick={() => setDirtyPrompt(null)} className="px-3 py-1.5 rounded-md text-[12px] font-bold text-on-surface-variant hover:text-on-surface">Cancel</button>
+                        <button
+                          onClick={() => resolveDirtyPrompt('discard', releaseMessage)}
+                          disabled={versionsBusy}
+                          className="px-3 py-1.5 rounded-md text-[12px] font-bold bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                          Discard Changes
+                        </button>
+                        <button
+                          onClick={() => resolveDirtyPrompt('release', releaseMessage)}
+                          disabled={versionsBusy}
+                          className="px-3 py-1.5 rounded-md text-[12px] font-bold bg-primary text-on-primary hover:opacity-90 disabled:opacity-50"
+                        >
+                          Release then Switch
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ── Combos panel ── */}
           {tab === 'combos' && (
@@ -4030,6 +4792,8 @@ export function DeckView() {
           <CardDetailPanel
             oracleId={detailOracleId}
             deckId={deckId}
+            deckCardId={detailOracleId ? deckCards.find(dc => dc.oracle_id === detailOracleId)?.id ?? null : null}
+            onTagsChanged={handleTagsChanged}
             addBoard="main"
             deckFormat={deck?.format}
             initialImageUrl={detailOracleId ? preferredImagesRef.current[detailOracleId] : undefined}
@@ -4054,6 +4818,49 @@ export function DeckView() {
         onClose={() => setDeckSettingsOpen(false)}
         onSave={handleSaveDeckSettings}
       />
+
+      {/* Tag reassignment prompt — ambiguous cross-group drag (Case 1) */}
+      {tagReassignPrompt && (
+        <div
+          className="absolute inset-0 z-[700] flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
+          onClick={e => { if (e.target === e.currentTarget) setTagReassignPrompt(null); }}
+        >
+          <div className="glass-panel rounded-2xl p-6 w-96 shadow-2xl border border-white/5">
+            <h3 className="font-headline-md text-base text-on-surface font-bold mb-2">Move "{tagReassignPrompt.cardName}"?</h3>
+            <p className="text-label-md text-on-surface-variant/60 mb-4">
+              This card's priority-{arrangementsCacheRef.current.find(a => a.id === currentArrangementIdRef.current)?.grouping_level ?? 1} tag is{' '}
+              <strong>{tagReassignPrompt.sourceTag}</strong>. Dropping it on <strong>{tagReassignPrompt.destTag}</strong> — what should happen?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => resolveTagReassign('remove')}
+                className="w-full text-left px-3 py-2 rounded-lg text-label-md text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+              >
+                Remove from <strong>{tagReassignPrompt.sourceTag}</strong> <span className="text-on-surface-variant/40">(no replacement at this level)</span>
+              </button>
+              <button
+                onClick={() => resolveTagReassign('replace')}
+                className="w-full text-left px-3 py-2 rounded-lg text-label-md text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+              >
+                Replace with <strong>{tagReassignPrompt.destTag}</strong>
+              </button>
+              <button
+                onClick={() => resolveTagReassign('insert')}
+                className="w-full text-left px-3 py-2 rounded-lg text-label-md text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+              >
+                Insert <strong>{tagReassignPrompt.destTag}</strong>, keep <strong>{tagReassignPrompt.sourceTag}</strong> at a lower priority
+              </button>
+              <button
+                onClick={() => setTagReassignPrompt(null)}
+                className="w-full text-left px-3 py-2 rounded-lg text-label-md text-on-surface-variant/50 hover:bg-white/5 transition-all mt-1"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Group modal */}
       {groupModalOpen && (
@@ -4084,7 +4891,7 @@ export function DeckView() {
                 type="text"
                 value={groupName}
                 onChange={e => setGroupName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleAddGroup(); if (e.key === 'Escape') { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); } }}
+                onKeyDown={e => { if (e.key === 'Enter' && groupHasSeed) handleAddGroup(); if (e.key === 'Escape') { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); } }}
                 placeholder="New Group"
                 autoFocus
                 className="flex-1 bg-surface-container/60 border border-white/5 rounded-lg px-3 py-2 text-body-md text-on-surface focus:outline-none focus:border-primary/50 placeholder:text-on-surface-variant/30"
@@ -4192,9 +4999,22 @@ export function DeckView() {
               </div>
             )}
 
+            {groupCreateError ? (
+              <p className="text-[9px] text-red-400/80 mb-2">{groupCreateError}</p>
+            ) : !groupHasSeed && (
+              <p className="text-[9px] text-on-surface-variant/40 mb-2">
+                Select cards on the canvas first, or set a Type/Oracle filter above — a group needs at least one card to exist.
+              </p>
+            )}
             <div className="flex gap-3 mt-2">
               <button onClick={() => { pendingGroupFromSelRef.current = null; setGroupModalOpen(false); }} className="flex-1 py-2 rounded-lg border border-white/5 text-on-surface-variant text-label-md font-bold hover:bg-white/5 transition-all">Cancel</button>
-              <button onClick={handleAddGroup} className="flex-1 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-label-md font-bold hover:bg-primary/20 transition-all">Create</button>
+              <button
+                onClick={handleAddGroup}
+                disabled={!groupHasSeed}
+                className="flex-1 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-label-md font-bold hover:bg-primary/20 transition-all disabled:opacity-30 disabled:hover:bg-primary/10 disabled:cursor-not-allowed"
+              >
+                Create
+              </button>
             </div>
           </div>
         </div>
@@ -4541,6 +5361,41 @@ export function DeckView() {
             setWidgetEditorOpen(false);
           }}
         />
+      )}
+
+      {/* Deck options menu (Settings / Import / Export) — rendered outside the subheader
+          because its backdrop-blur creates a stacking context that would otherwise trap
+          the menu behind the canvas. */}
+      {deckMenuAnchor && (
+        <>
+          <div className="fixed inset-0 z-[598]" onClick={() => setDeckMenuAnchor(null)} />
+          <div
+            className="fixed z-[599] w-48 py-1 rounded-lg bg-surface-container shadow-xl border border-white/10"
+            style={{ top: deckMenuAnchor.top, left: deckMenuAnchor.left }}
+          >
+            <button
+              onClick={() => { setDeckMenuAnchor(null); setDeckSettingsOpen(true); }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12px] font-medium text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">tune</span>
+              Deck settings
+            </button>
+            <button
+              onClick={() => { setDeckMenuAnchor(null); setImportOpen(true); }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12px] font-medium text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">file_upload</span>
+              Import decklist
+            </button>
+            <button
+              onClick={() => { setDeckMenuAnchor(null); handleExport(); }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-[12px] font-medium text-on-surface-variant hover:bg-white/5 hover:text-on-surface transition-all"
+            >
+              <span className="material-symbols-outlined text-[16px]">{exportFlash ? 'check' : 'file_download'}</span>
+              Export to clipboard
+            </button>
+          </div>
+        </>
       )}
 
       {/* Close group menu on outside click */}

@@ -214,6 +214,30 @@ return'<div style="font-family:-apple-system,sans-serif">'+rows+'</div>';
 `,
   });
 
+  // ── Deck Value ─────────────────────────────────────────────────────────────
+  WidgetRegistry.register({
+    id: 'deck-value',
+    name: 'Deck Value',
+    description: 'Estimated market value (USD, non-foil) of the deck',
+    icon: 'paid',
+    readonly: true,
+    width: 175,
+    params: [
+      { key: 'use_all', label: 'Include sideboard', type: 'boolean', default: false },
+    ],
+    code: `
+const source=params.use_all?data.allCards:data.cards;
+if(!source.length)return'<p style="color:rgba(255,255,255,0.2);font-size:11px;text-align:center;padding:10px 0">No cards</p>';
+let total=0,priced=0;
+source.forEach(c=>{ if(c.priceUsd){ total+=c.priceUsd*c.qty; priced+=c.qty; } });
+const missing=source.reduce((s,c)=>s+c.qty,0)-priced;
+return'<div style="font-family:-apple-system,sans-serif;text-align:center">'
+  +'<div style="font-size:24px;font-weight:700;color:#f2ca83">$'+total.toFixed(2)+'</div>'
+  +(missing>0?'<div style="font-size:9px;color:rgba(255,255,255,0.25);margin-top:4px">'+missing+' card'+(missing!==1?'s':'')+' without price data</div>':'')
+  +'</div>';
+`,
+  });
+
   // ── Land Ratio ──────────────────────────────────────────────────────────────
   WidgetRegistry.register({
     id: 'land-ratio',

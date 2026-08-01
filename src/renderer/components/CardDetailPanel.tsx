@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { Card, CardImage } from '../types/electron';
 import { ManaCost, manaCostToHtml } from './ManaSymbol';
 import { useToastStore } from '../store/useToastStore';
+import { TagChipEditor } from './TagChipEditor';
 
 function renderOracleText(text: string): string {
   return manaCostToHtml(text, 12);
@@ -31,9 +32,13 @@ interface CardDetailPanelProps {
   deckFormat?: string;
   /** Previously selected image URL for this card — restores the user's print choice on open. */
   initialImageUrl?: string;
+  /** deck_cards row id for this card instance — tags are scoped per deck-card, not per oracle card. Omit to hide the tag editor (e.g. card isn't in the deck yet). */
+  deckCardId?: number | null;
+  /** Called after a tag is added/removed/reordered/recolored — lets the canvas re-derive its tag groups live. */
+  onTagsChanged?: () => void;
 }
 
-export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDeck, onCoverChange, onPrintingChange, onFindSimilar, deckFormat, initialImageUrl }: CardDetailPanelProps) {
+export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDeck, onCoverChange, onPrintingChange, onFindSimilar, deckFormat, initialImageUrl, deckCardId, onTagsChanged }: CardDetailPanelProps) {
   const [card, setCard] = useState<Card | null>(null);
   const [images, setImages] = useState<CardImage[]>([]);
   const [currentImgUrl, setCurrentImgUrl] = useState('');
@@ -448,6 +453,10 @@ export function CardDetailPanel({ oracleId, deckId, addBoard, onClose, onAddToDe
                   )}
                 </div>
               </div>
+            )}
+
+            {deckCardId != null && (
+              <TagChipEditor deckCardId={deckCardId} deckId={deckId} onChanged={onTagsChanged} />
             )}
 
             {/* ── Legality chips ── */}

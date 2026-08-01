@@ -9,9 +9,13 @@ export interface WidgetCard {
   colorIdentity: string[];
   /** EDHREC rank from Scryfall bulk data (lower = more popular in Commander). Undefined if not loaded. */
   edhrecRank?: number;
+  /** Estimated USD price (non-foil), from Scryfall bulk data. Undefined if not loaded. */
+  priceUsd?: number;
 }
 
-/** A named group from the canvas arrangement (populated from .group-container DOM elements). */
+/** A tag-derived canvas group — a group IS a tag; membership is computed from each card's
+ *  ordered tag list at the arrangement's grouping_level (see lib/tagGrouping.ts), then
+ *  read back off the rendered .group-container DOM elements. */
 export interface WidgetGroup {
   name: string;
   color: string;
@@ -29,7 +33,8 @@ export interface WidgetData {
   /** Total cards in the deck (sum of quantities, excl. sideboard) */
   deckSize: number;
   /**
-   * Canvas arrangement groups (non-empty when the workshop has at least one group container).
+   * Tag-derived canvas groups at the current arrangement's grouping_level
+   * (non-empty when at least one tag has a card at that level).
    * Widgets should fall back to card-type grouping when this is empty.
    */
   groups: WidgetGroup[];

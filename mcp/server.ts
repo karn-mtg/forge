@@ -227,6 +227,115 @@ server.tool(
   }
 );
 
+// ── Deck branch/version tools ──────────────────────────────────────────────────
+// A branch is a named, independent, linear sequence of released versions —
+// branches never merge back together. deck_cards/tags/arrangements are always
+// the live working copy of whichever branch is checked out; releasing snapshots
+// that state into an immutable version.
+
+server.tool(
+  'get_branches',
+  'List all branches of a deck, each with its tip version number/message and whether it is the currently active (checked-out) branch, and whether it has unreleased local changes (is_dirty).',
+  { deckId: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.getBranches(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'create_branch',
+  'Create a new branch of a deck, forked from a specific released version (of any existing branch of the same deck). The new branch starts as an exact copy of that version.',
+  {
+    deckId:         z.number().int().positive(),
+    name:           z.string().min(1).max(100),
+    sourceVersionId: z.number().int().positive().describe('deck_versions row id to fork from'),
+  },
+  async (args) => {
+    try { return ok(lib.createBranch(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'rename_branch',
+  'Rename a branch.',
+  { id: z.number().int().positive(), name: z.string().min(1).max(100) },
+  async (args) => {
+    try { return ok(lib.renameBranch(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'delete_branch',
+  'Delete a branch and all its versions. Cannot delete the root branch or the currently active branch.',
+  { id: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.deleteBranch(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'get_versions',
+  'List all released versions of a branch, newest first, with message, timestamp, and card count.',
+  { branchId: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.getVersions(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'release_version',
+  'Snapshot the deck\'s current card list, tags, and arrangements as a new released version on the given branch.',
+  { branchId: z.number().int().positive(), message: z.string().max(500).optional() },
+  async (args) => {
+    try { return ok(lib.releaseVersion(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'get_version_diff',
+  'Compare two versions\' card lists. Returns added, removed, and quantity-changed cards (keyed by oracle_id + board).',
+  { versionAId: z.number().int().positive(), versionBId: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.getVersionDiff(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'is_deck_dirty',
+  'Check whether a deck has unreleased local changes on its currently active branch.',
+  { deckId: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.isDeckDirty(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'switch_branch',
+  'Check out a different branch, replacing the deck\'s live card list/tags/arrangements with that branch\'s tip version. If there are unreleased local changes, onDirty must be "release" (snapshot them first) or "discard" (throw them away) — omitting it when dirty returns a DECK_DIRTY error.',
+  {
+    deckId:        z.number().int().positive(),
+    targetBranchId: z.number().int().positive(),
+    onDirty:       z.enum(['release', 'discard']).optional(),
+    message:       z.string().max(500).optional().describe('Message for the auto-release, if onDirty is "release"'),
+  },
+  async (args) => {
+    try { return ok(lib.switchBranch(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'restore_version',
+  'Materialize a specific (not necessarily tip) version\'s snapshot as the deck\'s live working state, switching branches first if needed. Same onDirty semantics as switch_branch.',
+  {
+    versionId: z.number().int().positive(),
+    onDirty:   z.enum(['release', 'discard']).optional(),
+    message:   z.string().max(500).optional(),
+  },
+  async (args) => {
+    try { return ok(lib.restoreVersion(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
 // ── Deck card tools ───────────────────────────────────────────────────────────
 
 server.tool(
@@ -482,24 +591,119 @@ server.tool(
   async (args) => { try { return ok(lib.updateCardPrint(libDb, args)); } catch(e) { return err(e); } }
 );
 
+// ── Tags ──────────────────────────────────────────────────────────────────────
+
+server.tool(
+  'get_card_tags',
+  'Get the ordered tag list for a deck card. Position 0 is highest priority. A gap can hold an explicit placeholder (is_placeholder=true) meaning the card deliberately has no group at that exact priority level.',
+  { id: z.number().int().positive().describe('deck_cards row id (NOT oracle_id)') },
+  async ({ id }) => {
+    try { return ok(lib.getCardTags(libDb, { deckCardId: id })); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'get_deck_tags',
+  'List every card-tag assignment across a deck (for browsing/suggestion purposes).',
+  { deckId: z.number().int().positive() },
+  async (args) => {
+    try { return ok(lib.getDeckTags(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'set_card_tag_at',
+  'Set (create or replace) the tag at one priority slot on a deck card.',
+  {
+    id:       z.number().int().positive().describe('deck_cards row id'),
+    position: z.number().int().min(0).max(19).describe('0-based priority slot'),
+    tagName:  z.string().min(1).max(50),
+  },
+  async ({ id, position, tagName }) => {
+    try { return ok(lib.setCardTagAt(libDb, { deckCardId: id, position, tagName })); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'clear_card_tag_at',
+  'Clear a tag slot on a deck card outright (deletes the row). The priority level re-engages fallback to the next-lower tag the card has.',
+  {
+    id:       z.number().int().positive().describe('deck_cards row id'),
+    position: z.number().int().min(0).max(19),
+  },
+  async ({ id, position }) => {
+    try { return ok(lib.clearCardTagAt(libDb, { deckCardId: id, position })); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'set_card_tags',
+  'Replace the full ordered tag list for a deck card in one call. Pass null for a position to make it an explicit empty slot (opts the card out of grouping at that exact priority, no fallback).',
+  {
+    id:   z.number().int().positive().describe('deck_cards row id'),
+    tags: z.array(z.string().min(1).max(50).nullable()).max(20),
+  },
+  async ({ id, tags }) => {
+    try { return ok(lib.setCardTags(libDb, { deckCardId: id, tags })); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'rename_tag_in_deck',
+  'Rename a tag across every card in a deck that has it, preserving its color.',
+  { deckId: z.number().int().positive(), oldName: z.string().min(1).max(50), newName: z.string().min(1).max(50) },
+  async (args) => {
+    try { return ok(lib.renameTagInDeck(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'delete_tag_from_deck',
+  'Delete a tag from every card in a deck that has it.',
+  { deckId: z.number().int().positive(), tagName: z.string().min(1).max(50) },
+  async (args) => {
+    try { return ok(lib.deleteTagFromDeck(libDb, args)); } catch (e) { return err(e); }
+  }
+);
+
+server.tool(
+  'set_arrangement_grouping_level',
+  'Configure which tag priority level (1st, 2nd, 3rd, ...) an arrangement uses to derive its canvas groups.',
+  { arrangementId: z.number().int().positive(), groupingLevel: z.number().int().min(1).max(20) },
+  async ({ arrangementId, groupingLevel }) => {
+    try { return ok(lib.setArrangementGroupingLevel(libDb, { id: arrangementId, groupingLevel })); } catch (e) { return err(e); }
+  }
+);
+
 // ── Canvas group / sticker helpers ────────────────────────────────────────────
 
 server.tool(
   'create_canvas_group',
-  'Add a named group of cards to an arrangement canvas. The group will appear as a labeled section in DeckView.',
+  'Create a tag and assign it to a set of cards in a deck. A "group" is just a visualization of a tag — this creates the tag definition (with a color) and appends it as the next-priority tag on each matching deck card. Use set_arrangement_grouping_level to pick which tag priority an arrangement displays as groups.',
   {
-    arrangementId: z.number().int().positive().describe('Arrangement ID'),
-    name:          z.string().min(1).max(100).describe('Group label'),
-    oracleIds:     z.array(z.string()).min(1).describe('oracle_id strings for cards to include'),
-    color:         z.string().optional().default('#4a9eff').describe('Group accent color (CSS hex)'),
+    arrangementId: z.number().int().positive().describe('Arrangement ID (used to resolve the deck)'),
+    name:          z.string().min(1).max(100).describe('Tag / group name'),
+    oracleIds:     z.array(z.string()).min(1).describe('oracle_id strings for cards to tag'),
+    color:         z.string().optional().describe('Tag accent color (CSS hex); auto-assigned if omitted'),
   },
   async ({ arrangementId, name, oracleIds, color }) => {
     try {
-      const canvas = loadCanvas(arrangementId);
-      canvas.groups = (canvas.groups as unknown[] | undefined) ?? [];
-      (canvas.groups as unknown[]).push({ id: crypto.randomUUID(), name, color, oracleIds });
-      lib.saveArrangementCanvas(libDb, { id: arrangementId, canvasJson: JSON.stringify(canvas) });
-      return ok({ ok: true, groupCount: (canvas.groups as unknown[]).length });
+      const arrangement = lib.getArrangementById(libDb, { id: arrangementId });
+      if (!arrangement) throw new Error(`Arrangement ${arrangementId} not found`);
+      const deck = lib.getDeck(libDb, { id: arrangement.deck_id });
+      if (color) lib.ensureTagColor(libDb, { deckId: arrangement.deck_id, tagName: name, color });
+      else lib.ensureTagColor(libDb, { deckId: arrangement.deck_id, tagName: name });
+
+      let taggedCount = 0;
+      for (const oracleId of oracleIds) {
+        const deckCard = deck.cards.find((c: { oracle_id: string }) => c.oracle_id === oracleId);
+        if (!deckCard) continue;
+        const existing = lib.getCardTags(libDb, { deckCardId: deckCard.id });
+        const nextPosition = existing.reduce((max: number, t: { position: number }) => Math.max(max, t.position + 1), 0);
+        lib.setCardTagAt(libDb, { deckCardId: deckCard.id, position: nextPosition, tagName: name });
+        taggedCount++;
+      }
+      return ok({ ok: true, taggedCount });
     } catch(e) { return err(e); }
   }
 );

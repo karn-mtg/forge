@@ -37,6 +37,7 @@ export interface Deck {
   recipient_id?: number | null;
   recipient_name?: string | null;
   recipient_type?: RecipientType | null;
+  active_branch_id?: number | null;
 }
 
 export interface DeckCardEntry {
@@ -126,12 +127,73 @@ export interface Arrangement {
   id: number;
   name: string;
   canvas_json: string | null;
+  grouping_level: number;
+}
+
+export interface CardTagRow {
+  position: number;
+  tag_name: string | null;
+  is_placeholder: 0 | 1;
+}
+
+export interface DeckCardTagRow extends CardTagRow {
+  deck_card_id: number;
+}
+
+export interface DeckTagColor {
+  tag_name: string;
+  color: string;
 }
 
 export interface AgentMemory {
   key: string;
   value: string;
   updated_at: string;
+}
+
+export interface DeckBranch {
+  id: number;
+  deck_id: number;
+  name: string;
+  is_root: 0 | 1;
+  parent_branch_id: number | null;
+  parent_version_id: number | null;
+  created_at: string;
+  tip_version_number: number;
+  tip_message: string | null;
+  tip_created_at: string | null;
+  is_active: boolean;
+  is_dirty: boolean;
+}
+
+export interface DeckVersion {
+  id: number;
+  branch_id: number;
+  version_number: number;
+  message: string | null;
+  created_at: string;
+  card_count: number;
+}
+
+export interface VersionDiffCard {
+  oracle_id: string;
+  scryfall_id?: string | null;
+  quantity: number;
+  board: string;
+  category?: string | null;
+}
+
+export interface VersionDiffChange {
+  oracle_id: string;
+  board: string;
+  from_quantity: number;
+  to_quantity: number;
+}
+
+export interface VersionDiff {
+  added: VersionDiffCard[];
+  removed: VersionDiffCard[];
+  changed: VersionDiffChange[];
 }
 
 declare global {
@@ -234,6 +296,26 @@ declare global {
       loadArrangementCanvas(args: { id: number }): Promise<{ canvasJson?: string } | null>;
       getDecksWithCard(args: { oracleId: string; excludeDeckId?: number }): Promise<{ id: number; name: string }[]>;
       getMostUsedCards(args?: { limit?: number }): Promise<{ oracle_id: string; deck_count: number }[]>;
+      getCardTags(args: { deckCardId: number }): Promise<CardTagRow[]>;
+      getDeckTags(args: { deckId: number }): Promise<DeckCardTagRow[]>;
+      getDeckTagColors(args: { deckId: number }): Promise<DeckTagColor[]>;
+      setTagColor(args: { deckId: number; tagName: string; color: string }): Promise<void>;
+      setCardTagAt(args: { deckCardId: number; position: number; tagName?: string | null; isPlaceholder?: boolean }): Promise<void>;
+      clearCardTagAt(args: { deckCardId: number; position: number }): Promise<void>;
+      setCardTags(args: { deckCardId: number; tags: (string | null)[] }): Promise<void>;
+      renameTagInDeck(args: { deckId: number; oldName: string; newName: string }): Promise<void>;
+      deleteTagFromDeck(args: { deckId: number; tagName: string }): Promise<void>;
+      setArrangementGroupingLevel(args: { id: number; groupingLevel: number }): Promise<void>;
+      getBranches(args: { deckId: number }): Promise<DeckBranch[]>;
+      createBranch(args: { deckId: number; name: string; sourceVersionId: number }): Promise<{ id: number }>;
+      renameBranch(args: { id: number; name: string }): Promise<void>;
+      deleteBranch(args: { id: number }): Promise<void>;
+      getVersions(args: { branchId: number }): Promise<DeckVersion[]>;
+      releaseVersion(args: { branchId: number; message?: string | null }): Promise<{ id: number; version_number: number }>;
+      getVersionDiff(args: { versionAId: number; versionBId: number }): Promise<VersionDiff>;
+      isDeckDirty(args: { deckId: number }): Promise<boolean>;
+      switchBranch(args: { deckId: number; targetBranchId: number; onDirty?: 'release' | 'discard' | null; message?: string | null }): Promise<void>;
+      restoreVersion(args: { versionId: number; onDirty?: 'release' | 'discard' | null; message?: string | null }): Promise<void>;
     };
     settingsAPI: {
       get(): Promise<Record<string, unknown>>;
